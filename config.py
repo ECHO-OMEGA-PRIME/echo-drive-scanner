@@ -17,6 +17,7 @@ EXISTING_SCANNER = Path(r"O:\ECHO_OMEGA_PRIME\CORE\system_scanner.py")
 
 # ── Cloud Endpoints ──────────────────────────────────────────────────────────
 
+ENGINE_API_KEY: str = "echo-omega-prime-forge-x-2026"
 ENGINE_RUNTIME_URL = "https://echo-engine-runtime.bmcii1976.workers.dev"
 SHARED_BRAIN_URL = "https://echo-shared-brain.bmcii1976.workers.dev"
 GRAPH_RAG_URL = "https://echo-graph-rag.bmcii1976.workers.dev"
@@ -28,9 +29,13 @@ DRIVE_INTELLIGENCE_URL = "https://echo-drive-intelligence.bmcii1976.workers.dev"
 
 RUNTIME_ENDPOINTS = {
     "engine_query": "/engine/{engine_id}/query",
+    "query_engine": "/engine/{engine_id}/query",
     "domain_query": "/domain/{domain}/query",
+    "query_domain": "/domain/{domain}/query",
     "cross_domain": "/cross-domain/query",
+    "global_search": "/search",
     "search": "/search",
+    "list_domains": "/domains",
     "domains": "/domains",
     "health": "/health",
     "stats": "/stats",
@@ -39,8 +44,8 @@ RUNTIME_ENDPOINTS = {
 MAX_CONCURRENT_REQUESTS = 20
 MAX_REQUESTS_PER_MINUTE = 500
 CACHE_TTL_SECONDS = 3600
-REQUEST_TIMEOUT_SECONDS = 10
-MAX_RETRIES = 3
+REQUEST_TIMEOUT_SECONDS = 3
+MAX_RETRIES = 0
 RETRY_BACKOFF_BASE = 0.5
 
 # ── Content Sampling ─────────────────────────────────────────────────────────
@@ -202,35 +207,35 @@ SCAN_PROFILES = {
 
 # ── File Signatures (Magic Bytes) ────────────────────────────────────────────
 
-FILE_SIGNATURES: dict[bytes, str] = {
-    b"\x25\x50\x44\x46": "application/pdf",
-    b"\x50\x4b\x03\x04": "application/zip",
-    b"\xd0\xcf\x11\xe0": "application/msword",
-    b"\x89\x50\x4e\x47": "image/png",
-    b"\xff\xd8\xff": "image/jpeg",
-    b"\x7f\x45\x4c\x46": "application/x-elf",
-    b"\x4d\x5a": "application/x-dosexec",
-    b"\x53\x51\x4c\x69": "application/x-sqlite3",
-    b"\x47\x49\x46\x38": "image/gif",
-    b"\x42\x4d": "image/bmp",
-    b"\x52\x49\x46\x46": "audio/wav",
-    b"\x49\x44\x33": "audio/mpeg",
-    b"\xff\xfb": "audio/mpeg",
-    b"\x1a\x45\xdf\xa3": "video/webm",
-    b"\x00\x00\x00\x1c\x66\x74\x79\x70": "video/mp4",
-    b"\x00\x00\x01\xba": "video/mpeg",
-    b"\x00\x00\x01\xb3": "video/mpeg",
-    b"\x1f\x8b": "application/gzip",
-    b"\x42\x5a\x68": "application/x-bzip2",
-    b"\xfd\x37\x7a\x58\x5a\x00": "application/x-xz",
-    b"\x37\x7a\xbc\xaf\x27\x1c": "application/x-7z-compressed",
-    b"\x52\x61\x72\x21": "application/x-rar",
-    b"\x4f\x67\x67\x53": "audio/ogg",
-    b"\x66\x4c\x61\x43": "audio/flac",
-    b"\x7b": "application/json",
-    b"\xef\xbb\xbf": "text/plain",
-    b"\xff\xfe": "text/plain",
-    b"\xfe\xff": "text/plain",
+FILE_SIGNATURES: dict[str, str] = {
+    "25504446": "application/pdf",
+    "504b0304": "application/zip",
+    "d0cf11e0": "application/msword",
+    "89504e47": "image/png",
+    "ffd8ff": "image/jpeg",
+    "7f454c46": "application/x-elf",
+    "4d5a": "application/x-dosexec",
+    "53514c69": "application/x-sqlite3",
+    "47494638": "image/gif",
+    "424d": "image/bmp",
+    "52494646": "audio/wav",
+    "494433": "audio/mpeg",
+    "fffb": "audio/mpeg",
+    "1a45dfa3": "video/webm",
+    "0000001866747970": "video/mp4",
+    "000001ba": "video/mpeg",
+    "000001b3": "video/mpeg",
+    "1f8b": "application/gzip",
+    "425a68": "application/x-bzip2",
+    "fd377a585a00": "application/x-xz",
+    "377abcaf271c": "application/x-7z-compressed",
+    "52617221": "application/x-rar",
+    "4f676753": "audio/ogg",
+    "664c6143": "audio/flac",
+    "7b": "application/json",
+    "efbbbf": "text/plain",
+    "fffe": "text/plain",
+    "feff": "text/plain",
 }
 
 # ── MIME to Extension Mapping ────────────────────────────────────────────────
@@ -361,65 +366,45 @@ EXTENSION_DOMAIN: dict[str, str] = {
     ".asm": "CYBER",
 }
 
-CONTENT_DOMAIN_RULES: dict[str, dict[str, str]] = {
-    ".pdf": {
-        r"contract|agreement|clause|indemnif": "LG",
-        r"invoice|revenue|balance|ledger|audit": "FIN",
-        r"deed|mineral|royalty|lease|convey": "LM",
-        r"patient|diagnosis|prescription|HIPAA": "MED",
-        r"well|drilling|casing|completion|BOP": "DRL",
-        r"fracture|proppant|slurry|perforat": "FRAC",
-        "_default": "UNKNOWN",
-    },
-    ".xlsx": {
-        r"revenue|expense|balance|depreciat": "ACCT",
-        r"production|BOE|MCF|barrel": "PROD",
-        r"premium|claim|loss|reserve|actuari": "INS",
-        "_default": "FIN",
-    },
-    ".xls": {
-        r"revenue|expense|balance|depreciat": "ACCT",
-        r"production|BOE|MCF|barrel": "PROD",
-        "_default": "FIN",
-    },
-    ".docx": {
-        r"contract|agreement|term|condition": "LG",
-        r"specification|tolerance|material": "MECH",
-        r"recipe|ingredient|HACCP|allergen": "FOOD",
-        "_default": "UNKNOWN",
-    },
-    ".doc": {
-        r"contract|agreement|term|condition": "LG",
-        r"specification|tolerance|material": "MECH",
-        "_default": "UNKNOWN",
-    },
-}
+CONTENT_DOMAIN_RULES: list[tuple[str, str]] = [
+    (r"contract|agreement|clause|indemnif", "LG"),
+    (r"invoice|revenue|balance|ledger|audit", "FIN"),
+    (r"deed|mineral|royalty|lease|convey", "LM"),
+    (r"patient|diagnosis|prescription|HIPAA", "MED"),
+    (r"well|drilling|casing|completion|BOP", "DRL"),
+    (r"fracture|proppant|slurry|perforat", "FRAC"),
+    (r"revenue|expense|balance|depreciat", "ACCT"),
+    (r"production|BOE|MCF|barrel", "PROD"),
+    (r"premium|claim|loss|reserve|actuari", "INS"),
+    (r"specification|tolerance|material", "MECH"),
+    (r"recipe|ingredient|HACCP|allergen", "FOOD"),
+]
 
-PATH_DOMAIN_RULES: dict[str, str] = {
-    r"tax|irs|1040|w2|1099": "TAX",
-    r"legal|law|contract|litigation": "LG",
-    r"landman|title|deed|mineral|lease": "LM",
-    r"security|cyber|malware|threat|vuln": "CYBER",
-    r"finance|accounting|audit|ledger": "FIN",
-    r"medical|patient|clinical|pharma": "MED",
-    r"drilling|wellbore|BHA|MWD": "DRL",
-    r"frac|completion|stimulat|proppant": "FRAC",
-    r"production|artificial.lift|ESP|rod.pump": "PROD",
-    r"oilfield|equipment|BOP|separator": "OFE",
-    r"crypto|blockchain|defi|wallet|token": "CRYPTO",
-    r"insurance|actuari|claim|underwrit": "INS",
-    r"real.estate|property|apprais|mortgage": "RE",
-    r"aerospace|aviation|FAA|airframe": "AERO",
-    r"automotive|vehicle|ADAS|OBD": "AUTO",
-    r"chemistry|chemical|reaction|catalyst": "CHEM",
-    r"nuclear|reactor|neutron|fission": "NUC",
-    r"marine|offshore|subsea|vessel": "MARINE",
-    r"construction|concrete|steel|ACI": "CONST",
-    r"electrical|power|relay|transformer": "EE",
-    r"food|HACCP|sanitation|ingredient": "FOOD",
-    r"forensic|evidence|crime|investig": "FOREN",
-    r"environment|emission|EPA|pollut": "ENV",
-}
+PATH_DOMAIN_RULES: list[tuple[str, str]] = [
+    (r"tax|irs|1040|w2|1099", "TAX"),
+    (r"legal|law|contract|litigation", "LG"),
+    (r"landman|title|deed|mineral|lease", "LM"),
+    (r"security|cyber|malware|threat|vuln", "CYBER"),
+    (r"finance|accounting|audit|ledger", "FIN"),
+    (r"medical|patient|clinical|pharma", "MED"),
+    (r"drilling|wellbore|BHA|MWD", "DRL"),
+    (r"frac|completion|stimulat|proppant", "FRAC"),
+    (r"production|artificial.lift|ESP|rod.pump", "PROD"),
+    (r"oilfield|equipment|BOP|separator", "OFE"),
+    (r"crypto|blockchain|defi|wallet|token", "CRYPTO"),
+    (r"insurance|actuari|claim|underwrit", "INS"),
+    (r"real.estate|property|apprais|mortgage", "RE"),
+    (r"aerospace|aviation|FAA|airframe", "AERO"),
+    (r"automotive|vehicle|ADAS|OBD", "AUTO"),
+    (r"chemistry|chemical|reaction|catalyst", "CHEM"),
+    (r"nuclear|reactor|neutron|fission", "NUC"),
+    (r"marine|offshore|subsea|vessel", "MARINE"),
+    (r"construction|concrete|steel|ACI", "CONST"),
+    (r"electrical|power|relay|transformer", "EE"),
+    (r"food|HACCP|sanitation|ingredient", "FOOD"),
+    (r"forensic|evidence|crime|investig", "FOREN"),
+    (r"environment|emission|EPA|pollut", "ENV"),
+]
 
 # ── Sensitivity Patterns ─────────────────────────────────────────────────────
 
@@ -461,6 +446,10 @@ class ScanConfig(BaseModel):
     dashboard: bool = False
     upload_cloud: bool = False
     max_files: int | None = None
+    max_depth: int | None = None
+    max_file_size: int | None = None
+    include_extensions: set[str] | None = None
+    exclude_extensions: set[str] | None = None
     skip_binary: bool = False
     skip_large_mb: int | None = None
     incremental: bool = True
@@ -487,3 +476,30 @@ RECOMMENDATION_THRESHOLDS: dict[str, float] = {
     "update_staleness_min": 50.0,
     "update_importance_min": 60.0,
 }
+
+# ── Performance Tuning ─────────────────────────────────────────────────────
+STREAMING_BATCH_SIZE = 2000         # Files per streaming batch (memory vs speed)
+PARALLEL_SAMPLE_WORKERS = 32       # ThreadPool workers for parallel file sampling
+MIN_DISK_SPACE_GB = 5.0            # Minimum free GB on DB drive before aborting
+CHANGE_DETECTION_ENABLED = True    # Skip re-scanning unchanged files
+PRIORITY_DIRS = [                  # Scan these dirs first for fast intelligence
+    "ECHO_OMEGA_PRIME", "SYSTEMS", "WORKERS", "CORE", "_CLAUDE",
+    "ECHO_X", "ECHO_PRIME", "SPI_GODCORE",
+]
+
+# ── Library Extraction ─────────────────────────────────────────────────────
+LIBRARY_EXTRACTION_ENABLED = True  # Extract function/pattern/schema libraries
+LIBRARY_CODE_EXTENSIONS = {        # Extensions to extract libraries from
+    ".py", ".js", ".ts", ".jsx", ".tsx"
+}
+SENSITIVE_SCAN_ENABLED = True      # Scan for secrets/credentials in all files
+SECRET_ALERT_THRESHOLD = 1         # Alert immediately on any secret found
+
+# ── Worker Sync ────────────────────────────────────────────────────────────
+WORKER_SYNC_ENABLED = True         # Push results to echo-drive-intelligence worker
+DRIVE_INTELLIGENCE_URL = "https://echo-drive-intelligence.bmcii1976.workers.dev"
+WORKER_PUSH_BATCH_SIZE = 500       # Files per push batch to worker
+
+# ── DB Maintenance ─────────────────────────────────────────────────────────
+DB_MAX_SIZE_GB = 10.0              # Warn when DB exceeds this size
+DB_KEEP_SCANS = 3                  # Keep N most recent scans per drive, archive rest

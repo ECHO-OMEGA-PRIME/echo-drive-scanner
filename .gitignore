@@ -1,48 +1,28 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
-*.egg
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Database files (generated at runtime)
+﻿# Database (too large for git)
+intelligence.db
 *.db
-*.db-wal
 *.db-shm
-
-# Scan outputs
-scans/
-reports/
-exports/
+*.db-wal
 
 # Logs
 logs/
 *.log
 
-# Environment
-.env
-.env.local
+# Cache / compiled
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
 
-# Cloudflare Worker build artifacts
-WORKERS/echo-drive-intelligence/node_modules/
-WORKERS/echo-drive-intelligence/.wrangler/
-WORKERS/echo-drive-intelligence/dist/
+# Lock files
+locks/
+
+# Sensitive
+.env
+*.env
+
+# Data directory
+data/
+
+# Storage
+storage/cache/

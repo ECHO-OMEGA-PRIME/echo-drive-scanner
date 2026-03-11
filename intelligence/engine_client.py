@@ -28,6 +28,7 @@ from loguru import logger
 
 from config import (
     CACHE_TTL_SECONDS,
+    ENGINE_API_KEY,
     ENGINE_RUNTIME_URL,
     MAX_CONCURRENT_REQUESTS,
     MAX_REQUESTS_PER_MINUTE,
@@ -40,10 +41,12 @@ from storage.models import (
     Classification,
     ClassificationResult,
     ClassificationTier,
+    ConfidenceLevel,
     CrossDomainResult,
     DomainResult,
     EngineResult,
     FileSample,
+    QueryMode,
 )
 
 
@@ -258,16 +261,19 @@ class EngineClient:
                 start_time = time.time()
 
                 if method == "GET":
-                    async with self.session.get(url) as resp:
+                    async with self.session.get(url, headers={"X-Echo-API-Key": ENGINE_API_KEY}) as resp:
                         data = await resp.json()
                 else:  # POST
-                    async with self.session.post(url, json=json_data) as resp:
+                    async with self.session.post(url, json=json_data, headers={"X-Echo-API-Key": ENGINE_API_KEY}) as resp:
                         data = await resp.json()
 
                 latency_ms = (time.time() - start_time) * 1000
                 self._record_latency(latency_ms)
 
                 # Check for rate limit or server errors
+                if resp.status == 401:
+                        logger.debug("Engine API 401 — check API key")
+                        return {"success": False, "error": "Unauthorized"}
                 if resp.status == 429 or resp.status >= 500:
                     if attempt < MAX_RETRIES - 1:
                         backoff = RETRY_BACKOFF_BASE ** attempt
@@ -336,10 +342,16 @@ class EngineClient:
             logger.debug(f"Cache hit: {engine_id} | query={query[:50]}")
             return EngineResult(
                 engine_id=engine_id,
-                response=cached.get("response", ""),
-                confidence=cached.get("confidence", 0.0),
-                doctrines_triggered=cached.get("doctrines_triggered", []),
-                latency_ms=cached.get("latency_ms", 0.0),
+                domain=cached.get("domain", ""),
+                domain_label=cached.get("domain_label", ""),
+                topic=cached.get("topic", ""),
+                conclusion=cached.get("conclusion", cached.get("response", "")),
+                confidence=cached.get("confidence", ConfidenceLevel.UNKNOWN.value),
+                authority_weight=cached.get("authority_weight", 0),
+                score=cached.get("score", 0.0),
+                mode=cached.get("mode", mode),
+                determinism_hash=cached.get("determinism_hash", ""),
+                response_ms=cached.get("latency_ms", cached.get("response_ms", 0)),
                 cached=True,
             )
 
@@ -351,10 +363,13 @@ class EngineClient:
             logger.warning(f"Engine query failed: {engine_id} | error={data.get('error')}")
             return EngineResult(
                 engine_id=engine_id,
-                response="",
-                confidence=0.0,
-                doctrines_triggered=[],
-                latency_ms=0.0,
+                domain="",
+                topic="",
+                conclusion="",
+                confidence=ConfidenceLevel.UNKNOWN.value,
+                score=0.0,
+                mode=mode,
+                response_ms=0,
                 cached=False,
             )
 
@@ -363,10 +378,16 @@ class EngineClient:
 
         return EngineResult(
             engine_id=engine_id,
-            response=data.get("response", ""),
-            confidence=data.get("confidence", 0.0),
-            doctrines_triggered=data.get("doctrines_triggered", []),
-            latency_ms=data.get("latency_ms", 0.0),
+            domain=data.get("domain", ""),
+            domain_label=data.get("domain_label", ""),
+            topic=data.get("topic", ""),
+            conclusion=data.get("conclusion", data.get("response", "")),
+            confidence=data.get("confidence", ConfidenceLevel.UNKNOWN.value),
+            authority_weight=data.get("authority_weight", 0),
+            score=data.get("score", 0.0),
+            mode=data.get("mode", mode),
+            determinism_hash=data.get("determinism_hash", ""),
+            response_ms=data.get("latency_ms", data.get("response_ms", 0)),
             cached=False,
         )
 
@@ -393,30 +414,36 @@ class EngineClient:
         if not data.get("success", False):
             return DomainResult(
                 domain=domain,
-                engines=[],
-                aggregate_confidence=0.0,
-                consensus_response="",
+                results=[],
+                total_engines=0,
+                response_ms=0,
             )
 
         # Parse engine results
         engine_results = []
-        for eng in data.get("engines", []):
+        for eng in data.get("engines", data.get("results", [])):
             engine_results.append(
                 EngineResult(
                     engine_id=eng.get("engine_id", ""),
-                    response=eng.get("response", ""),
-                    confidence=eng.get("confidence", 0.0),
-                    doctrines_triggered=eng.get("doctrines_triggered", []),
-                    latency_ms=eng.get("latency_ms", 0.0),
+                    domain=eng.get("domain", domain),
+                    domain_label=eng.get("domain_label", ""),
+                    topic=eng.get("topic", ""),
+                    conclusion=eng.get("conclusion", eng.get("response", "")),
+                    confidence=eng.get("confidence", ConfidenceLevel.UNKNOWN.value),
+                    authority_weight=eng.get("authority_weight", 0),
+                    score=eng.get("score", eng.get("confidence_score", 0.0)),
+                    mode=eng.get("mode", QueryMode.FAST.value),
+                    determinism_hash=eng.get("determinism_hash", ""),
+                    response_ms=eng.get("latency_ms", eng.get("response_ms", 0)),
                     cached=False,
                 )
             )
 
         return DomainResult(
             domain=domain,
-            engines=engine_results,
-            aggregate_confidence=data.get("aggregate_confidence", 0.0),
-            consensus_response=data.get("consensus_response", ""),
+            results=engine_results,
+            total_engines=data.get("total_engines", len(engine_results)),
+            response_ms=data.get("response_ms", 0),
         )
 
     async def cross_domain_query(
@@ -438,25 +465,33 @@ class EngineClient:
         data = await self._request("POST", path, {"query": query, "limit": limit})
 
         if not data.get("success", False):
-            return CrossDomainResult(matches=[], total_searched=0)
+            return CrossDomainResult(query=query, results=[], domains_searched=0)
 
-        # Parse matches
-        matches = []
-        for m in data.get("matches", []):
-            matches.append(
+        # Parse results
+        result_list = []
+        for m in data.get("results", data.get("matches", [])):
+            result_list.append(
                 EngineResult(
                     engine_id=m.get("engine_id", ""),
-                    response=m.get("response", ""),
-                    confidence=m.get("confidence", 0.0),
-                    doctrines_triggered=m.get("doctrines_triggered", []),
-                    latency_ms=m.get("latency_ms", 0.0),
+                    domain=m.get("domain", ""),
+                    domain_label=m.get("domain_label", ""),
+                    topic=m.get("topic", ""),
+                    conclusion=m.get("conclusion", m.get("response", "")),
+                    confidence=m.get("confidence", ConfidenceLevel.UNKNOWN.value),
+                    authority_weight=m.get("authority_weight", 0),
+                    score=m.get("score", m.get("confidence_score", 0.0)),
+                    mode=m.get("mode", QueryMode.FAST.value),
+                    determinism_hash=m.get("determinism_hash", ""),
+                    response_ms=m.get("latency_ms", m.get("response_ms", 0)),
                     cached=False,
                 )
             )
 
         return CrossDomainResult(
-            matches=matches,
-            total_searched=data.get("total_searched", 0),
+            query=query,
+            results=result_list,
+            domains_searched=data.get("domains_searched", data.get("total_searched", 0)),
+            response_ms=data.get("response_ms", 0),
         )
 
     async def global_search(
@@ -485,10 +520,16 @@ class EngineClient:
             results.append(
                 EngineResult(
                     engine_id=r.get("engine_id", ""),
-                    response=r.get("response", ""),
-                    confidence=r.get("confidence", 0.0),
-                    doctrines_triggered=r.get("doctrines_triggered", []),
-                    latency_ms=r.get("latency_ms", 0.0),
+                    domain=r.get("domain", ""),
+                    domain_label=r.get("domain_label", ""),
+                    topic=r.get("topic", ""),
+                    conclusion=r.get("conclusion", r.get("response", "")),
+                    confidence=r.get("confidence", ConfidenceLevel.UNKNOWN.value),
+                    authority_weight=r.get("authority_weight", 0),
+                    score=r.get("score", 0.0),
+                    mode=r.get("mode", QueryMode.FAST.value),
+                    determinism_hash=r.get("determinism_hash", ""),
+                    response_ms=r.get("latency_ms", r.get("response_ms", 0)),
                     cached=False,
                 )
             )

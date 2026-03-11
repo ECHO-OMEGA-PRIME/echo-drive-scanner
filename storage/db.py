@@ -182,6 +182,140 @@ CREATE TABLE IF NOT EXISTS domain_stats (
     UNIQUE(scan_id, domain),
     FOREIGN KEY (scan_id) REFERENCES scans(id)
 );
+
+-- ── Echo Function Library ──────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_functions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    language TEXT NOT NULL,
+    signature TEXT NOT NULL,
+    docstring TEXT,
+    body TEXT,
+    body_hash TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    line_number INTEGER,
+    is_async INTEGER DEFAULT 0,
+    quality_score INTEGER DEFAULT 0,
+    patterns TEXT,
+    arg_count INTEGER DEFAULT 0,
+    copy_count INTEGER DEFAULT 1,
+    first_seen_scan INTEGER,
+    last_seen_scan INTEGER,
+    UNIQUE(body_hash, file_path)
+);
+
+-- ── Echo Pattern Library ───────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_patterns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pattern TEXT NOT NULL,
+    language TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    scan_id INTEGER,
+    UNIQUE(pattern, file_path)
+);
+
+-- ── Echo Schema Library ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_schemas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    schema_type TEXT NOT NULL,
+    language TEXT,
+    file_path TEXT NOT NULL,
+    definition TEXT,
+    scan_id INTEGER,
+    UNIQUE(name, file_path)
+);
+
+-- ── Echo API Library ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_endpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    language TEXT,
+    file_path TEXT NOT NULL,
+    scan_id INTEGER,
+    UNIQUE(method, path, file_path)
+);
+
+-- ── Echo Prompt Library ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_prompts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prompt_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    length INTEGER DEFAULT 0,
+    file_path TEXT NOT NULL,
+    quality_score INTEGER DEFAULT 0,
+    scan_id INTEGER,
+    content_hash TEXT,
+    UNIQUE(content_hash, file_path)
+);
+
+-- ── Echo Config Library ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_configs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL,
+    value_preview TEXT,
+    language TEXT,
+    file_path TEXT NOT NULL,
+    scan_id INTEGER,
+    UNIQUE(key, file_path)
+);
+
+-- ── Echo Error Library ─────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    exception_type TEXT NOT NULL,
+    handler_body TEXT,
+    language TEXT,
+    file_path TEXT NOT NULL,
+    quality_score INTEGER DEFAULT 0,
+    scan_id INTEGER,
+    UNIQUE(exception_type, file_path)
+);
+
+-- ── Echo Credential Map ────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS lib_credentials (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    credential_key TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    scan_id INTEGER,
+    UNIQUE(credential_key, file_path)
+);
+
+-- ── Sensitive File Findings ────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS sensitive_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL,
+    secret_type TEXT NOT NULL,
+    line_number INTEGER,
+    match_preview TEXT,
+    scan_id INTEGER,
+    severity TEXT DEFAULT 'HIGH',
+    resolved INTEGER DEFAULT 0,
+    found_at TEXT DEFAULT (datetime('now'))
+);
+
+-- ── Scan Checkpoints ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS scan_checkpoints (
+    scan_id INTEGER NOT NULL,
+    drive TEXT NOT NULL,
+    last_path TEXT,
+    files_processed INTEGER DEFAULT 0,
+    batches_committed INTEGER DEFAULT 0,
+    updated_at TEXT,
+    PRIMARY KEY (scan_id, drive)
+);
+
+-- ── Change Detection ───────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS file_hashes (
+    path TEXT PRIMARY KEY,
+    sha256 TEXT,
+    xxhash TEXT,
+    size_bytes INTEGER,
+    modified_at TEXT,
+    last_scan_id INTEGER,
+    last_seen TEXT DEFAULT (datetime('now'))
+);
 """
 
 INDEX_SQL = """
@@ -203,6 +337,18 @@ CREATE INDEX IF NOT EXISTS idx_rels_target ON relationships(target_file_id);
 CREATE INDEX IF NOT EXISTS idx_recs_category ON recommendations(category);
 CREATE INDEX IF NOT EXISTS idx_recs_severity ON recommendations(severity);
 CREATE INDEX IF NOT EXISTS idx_domain_stats_scan ON domain_stats(scan_id);
+
+
+CREATE INDEX IF NOT EXISTS idx_lib_funcs_name ON lib_functions(name);
+CREATE INDEX IF NOT EXISTS idx_lib_funcs_lang ON lib_functions(language);
+CREATE INDEX IF NOT EXISTS idx_lib_funcs_hash ON lib_functions(body_hash);
+CREATE INDEX IF NOT EXISTS idx_lib_funcs_quality ON lib_functions(quality_score);
+CREATE INDEX IF NOT EXISTS idx_lib_patterns ON lib_patterns(pattern);
+CREATE INDEX IF NOT EXISTS idx_lib_endpoints ON lib_endpoints(method, path);
+CREATE INDEX IF NOT EXISTS idx_lib_prompts ON lib_prompts(prompt_type);
+CREATE INDEX IF NOT EXISTS idx_lib_creds ON lib_credentials(credential_key);
+CREATE INDEX IF NOT EXISTS idx_sensitive ON sensitive_findings(secret_type);
+CREATE INDEX IF NOT EXISTS idx_file_hashes ON file_hashes(sha256);
 """
 
 
@@ -218,6 +364,10 @@ class IntelligenceDB:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self._ensure_schema()
+
+    def initialize(self) -> None:
+        """Ensure database schema is up to date. Safe to call multiple times."""
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
@@ -893,3 +1043,199 @@ class IntelligenceDB:
                 (bucket_size, bucket_size, bucket_size, bucket_size, bucket_size, bucket_size),
             ).fetchall()
             return [dict(r) for r in rows]
+
+
+    # ── Library Store Methods ──────────────────────────────────────────────
+
+    def store_library_batch(self, scan_id: int, extractions: dict) -> dict:
+        """Store all library extractions from one file in a single transaction."""
+        counts = {}
+        with self._connect() as conn:
+
+            # Functions
+            funcs = extractions.get('functions', [])
+            for f in funcs:
+                import json as _j
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_functions
+                        (name, language, signature, docstring, body, body_hash,
+                         file_path, line_number, is_async, quality_score, patterns,
+                         arg_count, first_seen_scan, last_seen_scan)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """, (f['name'], f['language'], f['signature'], f.get('docstring',''),
+                          f.get('body',''), f['body_hash'], f['file_path'],
+                          f.get('line_number'), 1 if f.get('is_async') else 0,
+                          f.get('quality_score', 0), _j.dumps(f.get('patterns',[])),
+                          f.get('arg_count', 0), scan_id, scan_id))
+                    # Increment copy count if already exists
+                    conn.execute("""
+                        UPDATE lib_functions SET copy_count = copy_count + 1,
+                        last_seen_scan = ? WHERE body_hash = ? AND file_path != ?
+                    """, (scan_id, f['body_hash'], f['file_path']))
+                except Exception:
+                    pass
+            counts['functions'] = len(funcs)
+
+            # Patterns
+            pats = extractions.get('patterns', [])
+            for p in pats:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_patterns (pattern, language, file_path, scan_id)
+                        VALUES (?,?,?,?)
+                    """, (p['pattern'], p['language'], p['file_path'], scan_id))
+                except Exception:
+                    pass
+            counts['patterns'] = len(pats)
+
+            # Schemas
+            schemas = extractions.get('schemas', [])
+            for s in schemas:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_schemas
+                        (name, schema_type, language, file_path, definition, scan_id)
+                        VALUES (?,?,?,?,?,?)
+                    """, (s['name'], s['schema_type'], s.get('language',''), s['file_path'],
+                          s.get('definition','')[:500], scan_id))
+                except Exception:
+                    pass
+            counts['schemas'] = len(schemas)
+
+            # Endpoints
+            endpoints = extractions.get('endpoints', [])
+            for e in endpoints:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_endpoints
+                        (method, path, language, file_path, scan_id)
+                        VALUES (?,?,?,?,?)
+                    """, (e['method'], e['path'], e.get('language',''), e['file_path'], scan_id))
+                except Exception:
+                    pass
+            counts['endpoints'] = len(endpoints)
+
+            # Prompts
+            import hashlib
+            prompts = extractions.get('prompts', [])
+            for p in prompts:
+                h = hashlib.md5(p['content'].encode()).hexdigest()[:16]
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_prompts
+                        (prompt_type, content, length, file_path, scan_id, content_hash)
+                        VALUES (?,?,?,?,?,?)
+                    """, (p['prompt_type'], p['content'], p.get('length',0),
+                          p['file_path'], scan_id, h))
+                except Exception:
+                    pass
+            counts['prompts'] = len(prompts)
+
+            # Configs
+            configs = extractions.get('configs', [])
+            for c in configs:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_configs
+                        (key, value_preview, language, file_path, scan_id)
+                        VALUES (?,?,?,?,?)
+                    """, (c['key'], c.get('value_preview',''), c.get('language',''),
+                          c['file_path'], scan_id))
+                except Exception:
+                    pass
+            counts['configs'] = len(configs)
+
+            # Errors
+            errors = extractions.get('errors', [])
+            for e in errors:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_errors
+                        (exception_type, handler_body, language, file_path, scan_id)
+                        VALUES (?,?,?,?,?)
+                    """, (e['exception_type'], e.get('handler_body',''),
+                          e.get('language',''), e['file_path'], scan_id))
+                except Exception:
+                    pass
+            counts['errors'] = len(errors)
+
+            # Credentials
+            creds = extractions.get('credentials', [])
+            for c in creds:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO lib_credentials
+                        (credential_key, file_path, scan_id)
+                        VALUES (?,?,?)
+                    """, (c['credential_key'], c['file_path'], scan_id))
+                except Exception:
+                    pass
+            counts['credentials'] = len(creds)
+
+            # Sensitive findings
+            secrets = extractions.get('secrets', [])
+            for s in secrets:
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO sensitive_findings
+                        (file_path, secret_type, line_number, match_preview, scan_id)
+                        VALUES (?,?,?,?,?)
+                    """, (s['file_path'], s['secret_type'], s.get('line_number'),
+                          s.get('match_preview',''), scan_id))
+                except Exception:
+                    pass
+            counts['secrets'] = len(secrets)
+
+            conn.commit()
+        return counts
+
+    def update_file_hash(self, path: str, sha256: str, xxhash: str,
+                         size_bytes: int, modified_at: str, scan_id: int):
+        """Update change detection hash for a file."""
+        with self._connect() as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO file_hashes
+                (path, sha256, xxhash, size_bytes, modified_at, last_scan_id, last_seen)
+                VALUES (?,?,?,?,?,?,datetime('now'))
+            """, (path, sha256, xxhash, size_bytes, modified_at, scan_id))
+            conn.commit()
+
+    def file_unchanged(self, path: str, modified_at: str, size_bytes: int) -> bool:
+        """Return True if file hash record matches current mtime+size (skip re-scan)."""
+        with self._connect() as conn:
+            row = conn.execute("""
+                SELECT modified_at, size_bytes FROM file_hashes WHERE path=?
+            """, (path,)).fetchone()
+        if not row:
+            return False
+        return row[0] == modified_at and row[1] == size_bytes
+
+    def get_library_stats(self) -> dict:
+        """Return counts across all library tables."""
+        stats = {}
+        tables = ['lib_functions','lib_patterns','lib_schemas','lib_endpoints',
+                  'lib_prompts','lib_configs','lib_errors','lib_credentials',
+                  'sensitive_findings']
+        with self._connect() as conn:
+            for t in tables:
+                try:
+                    row = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()
+                    stats[t] = row[0] if row else 0
+                except Exception:
+                    stats[t] = 0
+            # Top duplicated functions
+            try:
+                rows = conn.execute("""
+                    SELECT name, language, copy_count, quality_score
+                    FROM lib_functions WHERE copy_count > 1
+                    ORDER BY copy_count DESC LIMIT 10
+                """).fetchall()
+                stats['top_duplicates'] = [
+                    {'name': r[0], 'lang': r[1], 'copies': r[2], 'quality': r[3]}
+                    for r in rows
+                ]
+            except Exception:
+                stats['top_duplicates'] = []
+        return stats
+
