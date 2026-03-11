@@ -15,6 +15,16 @@
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+![Echo Drive Scanner — AI filesystem intelligence](assets/hero.jpg)
+
+<p align="center">
+  <img src="assets/duplicates.jpg" width="48%" alt="637 duplicate functions discovered"/>
+  &nbsp;
+  <img src="assets/pipeline.jpg" width="48%" alt="6-phase intelligence pipeline"/>
+</p>
+
+
+
 *In 2025 the average developer's machine held somewhere between 500,000 and 2,000,000 files across a dozen drives. Nobody knew what was on them. Duplicates multiplied silently. Critical code was copy-pasted until it lived in 637 places simultaneously. Config files held credentials no one remembered putting there. This scanner was built to end that era. It looks at every file, understands what it is, scores it, finds its copies, and tells you exactly what to do about it. — Echo Omega Prime, March 2026*
 
 ---
