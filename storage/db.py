@@ -183,6 +183,34 @@ CREATE TABLE IF NOT EXISTS domain_stats (
     FOREIGN KEY (scan_id) REFERENCES scans(id)
 );
 
+-- ── Project Advisor Proposals (Stage 10) ───────────────────────────────────
+-- Build/program proposals: projects that need completion (TODO/WIP/STUB) and
+-- new builds/programs that should be built. Written by
+-- intelligence.project_advisor.store_proposals_to_db (kept in sync here so the
+-- table always exists for read queries even before a Stage-10 scan has run).
+CREATE TABLE IF NOT EXISTS project_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id INTEGER NOT NULL,
+    proposal_type TEXT NOT NULL,
+    category TEXT NOT NULL,
+    domain TEXT,
+    title TEXT NOT NULL,
+    summary TEXT,
+    rationale TEXT,
+    suggested_stack TEXT,
+    suggested_name TEXT,
+    effort_estimate TEXT,
+    priority_score REAL DEFAULT 0,
+    source_files TEXT,
+    existing_functions TEXT,
+    existing_classes TEXT,
+    capabilities TEXT,
+    duplicate_functions TEXT,
+    file_count INTEGER DEFAULT 0,
+    total_bytes INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
 -- ── Echo Function Library ──────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS lib_functions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -337,6 +365,9 @@ CREATE INDEX IF NOT EXISTS idx_rels_target ON relationships(target_file_id);
 CREATE INDEX IF NOT EXISTS idx_recs_category ON recommendations(category);
 CREATE INDEX IF NOT EXISTS idx_recs_severity ON recommendations(severity);
 CREATE INDEX IF NOT EXISTS idx_domain_stats_scan ON domain_stats(scan_id);
+CREATE INDEX IF NOT EXISTS idx_proposals_scan ON project_proposals(scan_id);
+CREATE INDEX IF NOT EXISTS idx_proposals_priority ON project_proposals(priority_score DESC);
+CREATE INDEX IF NOT EXISTS idx_proposals_category ON project_proposals(category);
 
 
 CREATE INDEX IF NOT EXISTS idx_lib_funcs_name ON lib_functions(name);
@@ -958,6 +989,111 @@ class IntelligenceDB:
         with self._connect() as conn:
             conn.execute("UPDATE recommendations SET status=? WHERE id=?", (status, rec_id))
             conn.commit()
+
+    # ── Project Advisor Proposal Operations (Stage 10) ───────────────────────
+
+    # Categories emitted by intelligence.project_advisor. The two high-level
+    # "kinds" queryable from the API map onto these categories:
+    #   completion → an existing project/script that needs finishing/refactor
+    #   new_build  → a brand-new build/program that should be created
+    _COMPLETION_CATEGORIES = ("PROMOTE_PARTIAL", "PROMOTE_SCRIPT")
+    _PROPOSAL_JSON_FIELDS = (
+        "rationale", "suggested_stack", "source_files",
+        "existing_functions", "existing_classes", "capabilities",
+        "duplicate_functions",
+    )
+
+    @classmethod
+    def _proposal_kind(cls, category: str | None) -> str:
+        """Map a proposal category to its high-level kind (completion|new_build)."""
+        return "completion" if (category or "") in cls._COMPLETION_CATEGORIES else "new_build"
+
+    def get_proposals(
+        self,
+        scan_id: int | None = None,
+        kind: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Get Project Advisor proposals ordered by priority (desc).
+
+        Args:
+            scan_id: Restrict to one scan; None returns across all scans.
+            kind: 'completion' (projects needing finishing — TODO/WIP/STUB) or
+                  'new_build' (new builds/programs). Also accepts a raw category
+                  (e.g. 'DATA_PIPELINE') or proposal_type ('PROJECT'/'PROGRAM').
+            limit: Max rows to return.
+
+        Returns:
+            List of proposal dicts with JSON columns parsed back to lists and a
+            derived 'kind' field. Empty list if the table is absent.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if scan_id is not None:
+            clauses.append("scan_id=?")
+            params.append(scan_id)
+
+        if kind:
+            k = kind.strip().lower().replace("-", "_")
+            completion_ph = ",".join("?" for _ in self._COMPLETION_CATEGORIES)
+            if k == "completion":
+                clauses.append(f"category IN ({completion_ph})")
+                params.extend(self._COMPLETION_CATEGORIES)
+            elif k in ("new_build", "newbuild", "new"):
+                clauses.append(f"category NOT IN ({completion_ph})")
+                params.extend(self._COMPLETION_CATEGORIES)
+            elif k in ("project", "program"):
+                clauses.append("UPPER(proposal_type)=?")
+                params.append(k.upper())
+            else:
+                # Treat as a raw category filter (case-insensitive)
+                clauses.append("UPPER(category)=?")
+                params.append(kind.strip().upper())
+
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = (
+            f"SELECT * FROM project_proposals {where} "
+            "ORDER BY priority_score DESC, id DESC LIMIT ?"
+        )
+        with self._connect() as conn:
+            try:
+                rows = conn.execute(sql, [*params, limit]).fetchall()
+            except sqlite3.OperationalError:
+                # Table not created yet (no Stage-10 scan has run on this db)
+                return []
+
+        proposals: list[dict[str, Any]] = []
+        for r in rows:
+            p = dict(r)
+            for field in self._PROPOSAL_JSON_FIELDS:
+                raw = p.get(field)
+                if raw:
+                    try:
+                        p[field] = json.loads(raw)
+                    except (json.JSONDecodeError, TypeError):
+                        p[field] = []
+                else:
+                    p[field] = []
+            p["kind"] = self._proposal_kind(p.get("category"))
+            proposals.append(p)
+        return proposals
+
+    def count_proposals(self, scan_id: int | None = None) -> int:
+        """Count stored proposals, optionally scoped to a scan."""
+        with self._connect() as conn:
+            try:
+                if scan_id is not None:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM project_proposals WHERE scan_id=?",
+                        (scan_id,),
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS cnt FROM project_proposals"
+                    ).fetchone()
+            except sqlite3.OperationalError:
+                return 0
+            return row["cnt"] if row else 0
 
     # ── Domain Stats Operations ──────────────────────────────────────────────
 

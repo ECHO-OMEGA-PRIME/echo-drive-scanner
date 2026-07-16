@@ -564,7 +564,9 @@ class IntelligenceScanOrchestrator:
                     scan_id=scan_id, file_contents=advisor_contents,
                 )
                 if proposals:
-                    db_path = str(Path(__file__).parent / "intelligence.db")
+                    # Use the SAME db the dashboard/API reads (honours
+                    # DRIVESCAN_DB_PATH), not a hardcoded path.
+                    db_path = str(self.db.db_path)
                     store_proposals_to_db(db_path, proposals)
                     logger.info("Stage 10: {} proposals stored", len(proposals))
                     if KNOWLEDGE_FORGE_URL and ENGINE_API_KEY:

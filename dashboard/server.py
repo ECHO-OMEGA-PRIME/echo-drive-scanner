@@ -452,6 +452,142 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         _audit_action(rec_id, rec.category, "executed", "status updated", len(paths))
         return JSONResponse({"status": "executed", "id": rec_id})
 
+    # ── Project Advisor Proposal API (Stage 10) ──────────────────────────
+
+    def _proposal_to_prompt(p: dict[str, Any]) -> dict[str, Any]:
+        """Turn one advisor proposal into an echo.prompts.add build-queue row."""
+        base = (p.get("suggested_name") or p.get("title") or "proposal")
+        base = "".join(c if (c.isalnum() or c in "-_ ") else "" for c in str(base))
+        base = base.strip().lower().replace(" ", "-").replace("_", "-")[:48].strip("-")
+        slug = f"drivescan-prop-{p.get('id')}-{base}" if base else f"drivescan-prop-{p.get('id')}"
+
+        lines = [
+            f"# {p.get('title', 'Untitled Proposal')}",
+            "",
+            f"**Kind:** {p.get('kind')}  |  **Type:** {p.get('proposal_type')}  |  "
+            f"**Category:** {p.get('category')}  |  **Domain:** {p.get('domain')}",
+            f"**Priority:** {p.get('priority_score')}/100  |  "
+            f"**Effort:** {p.get('effort_estimate')}",
+            "",
+            p.get("summary", ""),
+            "",
+            "## Rationale",
+        ]
+        lines += [f"- {r}" for r in (p.get("rationale") or [])]
+        stack = p.get("suggested_stack") or []
+        if stack:
+            lines += ["", f"**Suggested stack:** {', '.join(stack)}"]
+        evidence = (p.get("source_files") or [])[:15]
+        if evidence:
+            lines += ["", "## Evidence (source files)"]
+            lines += [f"- `{s}`" for s in evidence]
+        lines += ["", "_Source: Intelligent Drive Scanner Stage-10 Project Advisor "
+                  f"(scan #{p.get('scan_id')}, proposal #{p.get('id')})._"]
+
+        tags = ["drive-scanner-proposal"]
+        for t in (p.get("kind"), p.get("proposal_type"), p.get("category"), p.get("domain")):
+            if t:
+                tags.append(str(t).strip().lower().replace("_", "-"))
+
+        return {
+            "slug": slug,
+            "title": p.get("title", "Drive Scanner proposal"),
+            "body": "\n".join(lines),
+            "priority": 5,
+            "tags": tags,
+        }
+
+    def _feed_queue(prompts: list[dict[str, Any]]) -> dict[str, Any]:
+        """Best-effort push of prepared prompts to echo.prompts.add via the gate.
+
+        Off by default; only reached when the caller passes queue=true. Requires a
+        sovereign key in the environment (ECHO_SOVEREIGN_KEY / ECHO_SDK_SOVEREIGN_KEY).
+        Returns what was submitted; never raises into the request path.
+        """
+        import urllib.request
+        import urllib.error
+
+        key = (
+            os.environ.get("ECHO_SOVEREIGN_KEY")
+            or os.environ.get("ECHO_SDK_SOVEREIGN_KEY")
+            or ""
+        )
+        gate = os.environ.get("ECHO_SDK_GATE", "http://192.168.1.220:8000")
+        if not key:
+            return {"queued": False, "reason": "no sovereign key in env", "prepared": prompts}
+
+        submitted: list[dict[str, Any]] = []
+        for pr in prompts:
+            envelope = {
+                "envelope_version": 1,
+                "capability": "echo.prompts.add",
+                "params": {"command": "add", "options": pr},
+            }
+            data = json.dumps(envelope).encode("utf-8")
+            req = urllib.request.Request(
+                f"{gate}/sdk/invoke",
+                data=data,
+                headers={"Content-Type": "application/json", "X-Echo-API-Key": key},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    submitted.append({"slug": pr["slug"], "status": resp.status})
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                submitted.append({"slug": pr["slug"], "error": str(e)[:160]})
+        ok = sum(1 for s in submitted if s.get("status") == 200)
+        return {"queued": True, "submitted": submitted, "ok": ok, "count": len(prompts)}
+
+    @app.get("/api/proposals")
+    async def list_proposals(
+        scan_id: int | None = None,
+        kind: str | None = None,
+        limit: int = Query(default=100, le=1000),
+        queue: bool = False,
+        queue_top: int = Query(default=10, ge=1, le=100),
+    ) -> JSONResponse:
+        """Project Advisor build/program proposals — projects that need completion
+        (TODO/WIP/STUB) plus new builds that should be built, priority-scored.
+
+        Query params:
+            scan_id: restrict to one scan (default: across all scans)
+            kind:    'completion' | 'new_build' (also accepts a raw category or
+                     proposal_type)
+            limit:   max rows
+            queue:   if true, feed the top proposals to the build queue
+                     (echo.prompts.add). Off by default.
+            queue_top: how many top proposals to queue when queue=true.
+        """
+        proposals = db.get_proposals(scan_id=scan_id, kind=kind, limit=limit)
+        payload: dict[str, Any] = {
+            "proposals": proposals,
+            "count": len(proposals),
+            "completion": sum(1 for p in proposals if p.get("kind") == "completion"),
+            "new_build": sum(1 for p in proposals if p.get("kind") == "new_build"),
+            "scan_id": scan_id,
+            "kind": kind,
+        }
+        if queue and proposals:
+            prompts = [_proposal_to_prompt(p) for p in proposals[:queue_top]]
+            payload["queue_feed"] = _feed_queue(prompts)
+        return JSONResponse(payload)
+
+    @app.get("/api/scan/{scan_id}/proposals")
+    async def scan_proposals(
+        scan_id: int,
+        kind: str | None = None,
+        limit: int = Query(default=100, le=1000),
+    ) -> JSONResponse:
+        """Project Advisor proposals for a specific scan, priority-ordered."""
+        proposals = db.get_proposals(scan_id=scan_id, kind=kind, limit=limit)
+        return JSONResponse({
+            "scan_id": scan_id,
+            "proposals": proposals,
+            "count": len(proposals),
+            "completion": sum(1 for p in proposals if p.get("kind") == "completion"),
+            "new_build": sum(1 for p in proposals if p.get("kind") == "new_build"),
+        })
+
     # ── Score API ────────────────────────────────────────────────────────
 
     @app.get("/api/scores/distribution")
