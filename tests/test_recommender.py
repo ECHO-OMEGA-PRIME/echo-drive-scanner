@@ -7,8 +7,6 @@ from storage.models import (
     DuplicateMember,
     FileRecord,
     IntelligenceScore,
-    Relationship,
-    RelationshipType,
 )
 
 
@@ -135,13 +133,15 @@ def test_severity_ordering():
     if len(recs) >= 2:
         severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
         for i in range(len(recs) - 1):
-            assert severity_order.get(recs[i].severity, 5) <= severity_order.get(recs[i + 1].severity, 5)
+            assert severity_order.get(recs[i].severity, 5) <= severity_order.get(
+                recs[i + 1].severity, 5
+            )
 
 
 def test_stats():
     """Engine stats are calculated correctly."""
     engine = RecommendationEngine()
-    recs = engine.generate_all([], {}, {}, [], [], scan_id=1)
+    engine.generate_all([], {}, {}, [], [], scan_id=1)
     stats = engine.get_stats()
     assert stats["total_recommendations"] == 0
     assert stats["total_affected_files"] == 0

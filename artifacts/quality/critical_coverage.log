@@ -1,0 +1,20 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m pytest tests/test_hardening.py tests/test_a_plus_hardening.py --cov=dashboard.api_models --cov=dashboard.security --cov=config --cov-report=term-missing --cov-report=json:artifacts/critical-coverage.json -q
+RETURN_CODE: 0
+
+STDOUT:
+...................................                                      [100%]
+=============================== tests coverage ================================
+_______________ coverage: platform win32, python 3.13.0-final-0 _______________
+
+Name                      Stmts   Miss Branch BrPart  Cover   Missing
+---------------------------------------------------------------------
+config.py                   126      6     14      3    94%   713-714, 720, 725, 728->731, 736-737
+dashboard\api_models.py      46      3     10      3    89%   39, 41, 47
+dashboard\security.py        97      6     18      2    93%   39-40, 48, 84, 129-130
+---------------------------------------------------------------------
+TOTAL                       269     15     42      8    93%
+Coverage JSON written to file artifacts/critical-coverage.json
+Required test coverage of 85.0% reached. Total coverage: 92.60%
+35 passed in 3.46s
+
+STDERR:

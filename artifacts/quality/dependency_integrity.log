@@ -1,0 +1,7 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m pip check
+RETURN_CODE: 0
+
+STDOUT:
+No broken requirements found.
+
+STDERR:

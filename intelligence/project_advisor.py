@@ -24,35 +24,81 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from storage.models import FileRecord, Classification, IntelligenceScore
-
+from storage.models import Classification, FileRecord, IntelligenceScore
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 CODE_EXTENSIONS = {
-    ".py", ".js", ".ts", ".jsx", ".tsx", ".cs", ".java", ".go", ".rs",
-    ".cpp", ".c", ".h", ".rb", ".php", ".ps1", ".sh", ".bat", ".lua",
-    ".r", ".m", ".swift", ".kt", ".scala",
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
+    ".cs",
+    ".java",
+    ".go",
+    ".rs",
+    ".cpp",
+    ".c",
+    ".h",
+    ".rb",
+    ".php",
+    ".ps1",
+    ".sh",
+    ".bat",
+    ".lua",
+    ".r",
+    ".m",
+    ".swift",
+    ".kt",
+    ".scala",
 }
 
 DATA_EXTENSIONS = {
-    ".csv", ".json", ".xml", ".xlsx", ".xls", ".db", ".sqlite", ".sqlite3",
-    ".parquet", ".feather", ".h5", ".hdf5", ".arrow", ".ndjson", ".jsonl",
+    ".csv",
+    ".json",
+    ".xml",
+    ".xlsx",
+    ".xls",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".parquet",
+    ".feather",
+    ".h5",
+    ".hdf5",
+    ".arrow",
+    ".ndjson",
+    ".jsonl",
 }
 
 DOC_EXTENSIONS = {
-    ".pdf", ".docx", ".doc", ".txt", ".md", ".rst", ".pptx", ".ppt",
-    ".html", ".htm",
+    ".pdf",
+    ".docx",
+    ".doc",
+    ".txt",
+    ".md",
+    ".rst",
+    ".pptx",
+    ".ppt",
+    ".html",
+    ".htm",
 }
 
 CONFIG_EXTENSIONS = {
-    ".yaml", ".yml", ".toml", ".ini", ".env", ".cfg", ".conf",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".env",
+    ".cfg",
+    ".conf",
 }
 
 # Patterns that suggest a fragment / partial / orphaned implementation
@@ -64,8 +110,18 @@ FRAGMENT_PATTERNS = [
 
 # Keywords suggesting automation opportunity
 AUTOMATION_SIGNALS = [
-    "manual", "copy", "paste", "export", "download", "upload",
-    "monthly", "weekly", "daily", "batch", "report", "summary",
+    "manual",
+    "copy",
+    "paste",
+    "export",
+    "download",
+    "upload",
+    "monthly",
+    "weekly",
+    "daily",
+    "batch",
+    "report",
+    "summary",
 ]
 
 # Domain → engine prefix mapping for gap detection
@@ -93,7 +149,7 @@ PRIORITY_WEIGHTS = {
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _human_size(nbytes: int) -> str:
@@ -133,16 +189,16 @@ def _extract_logic_signatures(content: str) -> dict[str, Any]:
     sigs["imports"] = re.findall(r"(?:import|from|require)\s+([\w.]+)", content)[:20]
 
     # API patterns
-    api_patterns = re.findall(
-        r"https?://[\w./-]+|fetch\(|requests\.|aiohttp|axios|curl", content
-    )
+    api_patterns = re.findall(r"https?://[\w./-]+|fetch\(|requests\.|aiohttp|axios|curl", content)
     sigs["api_calls"] = list(set(api_patterns))[:10]
 
     # Capability flags
     sigs["has_main"] = bool(re.search(r"def main\(|if __name__.*main", content))
     sigs["has_cli"] = bool(re.search(r"argparse|click|typer|sys\.argv", content))
     sigs["has_api"] = bool(re.search(r"FastAPI|Flask|Express|@app\.|router\.", content))
-    sigs["has_db"] = bool(re.search(r"sqlite|postgres|mysql|mongodb|sqlalchemy|prisma", content, re.I))
+    sigs["has_db"] = bool(
+        re.search(r"sqlite|postgres|mysql|mongodb|sqlalchemy|prisma", content, re.I)
+    )
     sigs["has_auth"] = bool(re.search(r"jwt|oauth|api.?key|bearer|authenticate", content, re.I))
 
     # Fragment signals
@@ -277,9 +333,7 @@ class ProjectAdvisor:
             groups[domain].append(f)
         return groups
 
-    def _group_by_directory(
-        self, files: list[FileRecord]
-    ) -> dict[str, list[FileRecord]]:
+    def _group_by_directory(self, files: list[FileRecord]) -> dict[str, list[FileRecord]]:
         groups: dict[str, list[FileRecord]] = defaultdict(list)
         for f in files:
             parent = str(Path(f.path).parent)
@@ -310,66 +364,80 @@ class ProjectAdvisor:
         # PATTERN: Heavy data domain, no code → needs pipeline
         if len(data_files) > 5 and len(code_files) == 0:
             priority = _score_priority(
-                len(files), total_bytes, has_engine,
-                0.0, len(data_files) / max(1, len(files))
+                len(files), total_bytes, has_engine, 0.0, len(data_files) / max(1, len(files))
             )
-            self._proposals.append({
-                "scan_id": scan_id,
-                "proposal_type": "PROJECT",
-                "category": "DATA_PIPELINE",
-                "domain": domain,
-                "title": f"Build {domain} Data Pipeline",
-                "summary": (
-                    f"Found {len(data_files)} {domain} data files "
-                    f"({_human_size(total_bytes)}) with zero processing code. "
-                    f"A dedicated ingestion + transformation pipeline would unlock "
-                    f"this data for AI queries and reporting."
-                ),
-                "rationale": [
-                    f"{len(data_files)} data files found ({', '.join(set(f.extension for f in data_files))})",
-                    f"0 code files in domain — no automation exists",
-                    f"Total data volume: {_human_size(total_bytes)}",
-                    f"Echo Engine Runtime has {domain} engines ready to classify",
-                ],
-                "suggested_stack": ["Python 3.11", "Pandas/Polars", "SQLite", "Cloudflare Worker", "Echo Engine Runtime"],
-                "suggested_name": f"echo-{domain.lower()}-pipeline",
-                "effort_estimate": "Medium (2-4 days)",
-                "priority_score": priority,
-                "source_files": [f.path for f in data_files[:10]],
-                "file_count": len(files),
-                "total_bytes": total_bytes,
-                "created_at": _now_iso(),
-            })
+            self._proposals.append(
+                {
+                    "scan_id": scan_id,
+                    "proposal_type": "PROJECT",
+                    "category": "DATA_PIPELINE",
+                    "domain": domain,
+                    "title": f"Build {domain} Data Pipeline",
+                    "summary": (
+                        f"Found {len(data_files)} {domain} data files "
+                        f"({_human_size(total_bytes)}) with zero processing code. "
+                        f"A dedicated ingestion + transformation pipeline would unlock "
+                        f"this data for AI queries and reporting."
+                    ),
+                    "rationale": [
+                        f"{len(data_files)} data files found ({', '.join(set(f.extension for f in data_files))})",
+                        "0 code files in domain — no automation exists",
+                        f"Total data volume: {_human_size(total_bytes)}",
+                        f"Echo Engine Runtime has {domain} engines ready to classify",
+                    ],
+                    "suggested_stack": [
+                        "Python 3.11",
+                        "Pandas/Polars",
+                        "SQLite",
+                        "Cloudflare Worker",
+                        "Echo Engine Runtime",
+                    ],
+                    "suggested_name": f"echo-{domain.lower()}-pipeline",
+                    "effort_estimate": "Medium (2-4 days)",
+                    "priority_score": priority,
+                    "source_files": [f.path for f in data_files[:10]],
+                    "file_count": len(files),
+                    "total_bytes": total_bytes,
+                    "created_at": _now_iso(),
+                }
+            )
 
         # PATTERN: Domain docs + data, no API integration
         if len(doc_files) > 10 and len(data_files) > 3 and len(code_files) < 3:
             priority = _score_priority(len(files), total_bytes, has_engine, 0.1, 0.5)
-            self._proposals.append({
-                "scan_id": scan_id,
-                "proposal_type": "PROJECT",
-                "category": "KNOWLEDGE_API",
-                "domain": domain,
-                "title": f"Build {domain} Knowledge API",
-                "summary": (
-                    f"Large {domain} document library ({len(doc_files)} docs + "
-                    f"{len(data_files)} data files) has no query interface. "
-                    f"A RAG-backed knowledge API would make this searchable and AI-accessible."
-                ),
-                "rationale": [
-                    f"{len(doc_files)} documents in {domain} domain",
-                    f"{len(data_files)} structured data files",
-                    "No REST API or query layer found",
-                    "Echo Knowledge Forge + Graph RAG infrastructure already available",
-                ],
-                "suggested_stack": ["FastAPI", "ChromaDB", "Echo Knowledge Forge", "Echo Graph RAG"],
-                "suggested_name": f"echo-{domain.lower()}-knowledge-api",
-                "effort_estimate": "Small (1-2 days)",
-                "priority_score": priority,
-                "source_files": [f.path for f in (doc_files + data_files)[:10]],
-                "file_count": len(files),
-                "total_bytes": total_bytes,
-                "created_at": _now_iso(),
-            })
+            self._proposals.append(
+                {
+                    "scan_id": scan_id,
+                    "proposal_type": "PROJECT",
+                    "category": "KNOWLEDGE_API",
+                    "domain": domain,
+                    "title": f"Build {domain} Knowledge API",
+                    "summary": (
+                        f"Large {domain} document library ({len(doc_files)} docs + "
+                        f"{len(data_files)} data files) has no query interface. "
+                        f"A RAG-backed knowledge API would make this searchable and AI-accessible."
+                    ),
+                    "rationale": [
+                        f"{len(doc_files)} documents in {domain} domain",
+                        f"{len(data_files)} structured data files",
+                        "No REST API or query layer found",
+                        "Echo Knowledge Forge + Graph RAG infrastructure already available",
+                    ],
+                    "suggested_stack": [
+                        "FastAPI",
+                        "ChromaDB",
+                        "Echo Knowledge Forge",
+                        "Echo Graph RAG",
+                    ],
+                    "suggested_name": f"echo-{domain.lower()}-knowledge-api",
+                    "effort_estimate": "Small (1-2 days)",
+                    "priority_score": priority,
+                    "source_files": [f.path for f in (doc_files + data_files)[:10]],
+                    "file_count": len(files),
+                    "total_bytes": total_bytes,
+                    "created_at": _now_iso(),
+                }
+            )
 
     def _analyze_directory_cluster(
         self,
@@ -389,8 +457,11 @@ class ProjectAdvisor:
         all_functions: list[str] = []
         all_classes: list[str] = []
         capability_flags: dict[str, bool] = {
-            "has_main": False, "has_cli": False, "has_api": False,
-            "has_db": False, "has_auth": False,
+            "has_main": False,
+            "has_cli": False,
+            "has_api": False,
+            "has_db": False,
+            "has_auth": False,
         }
 
         for f in code_files:
@@ -410,45 +481,49 @@ class ProjectAdvisor:
 
         # PATTERN: Partial implementation with real capability flags
         if fragment_density > 0.3 and (
-            capability_flags["has_main"] or capability_flags["has_cli"] or capability_flags["has_api"]
+            capability_flags["has_main"]
+            or capability_flags["has_cli"]
+            or capability_flags["has_api"]
         ):
             capabilities = [k.replace("has_", "") for k, v in capability_flags.items() if v]
             dir_name = Path(dir_path).name
 
-            self._proposals.append({
-                "scan_id": scan_id,
-                "proposal_type": "PROGRAM",
-                "category": "PROMOTE_PARTIAL",
-                "domain": "CODE",
-                "title": f"Promote '{dir_name}' to Full Application",
-                "summary": (
-                    f"Directory '{dir_path}' contains {len(code_files)} code files "
-                    f"with {int(fragment_density * 100)}% fragment density. "
-                    f"Detected capabilities: {', '.join(capabilities)}. "
-                    f"This partial implementation has enough structure to become a "
-                    f"production application with cleanup and completion."
-                ),
-                "rationale": [
-                    f"{len(code_files)} code files with existing logic",
-                    f"{int(fragment_density * 100)}% contain TODO/WIP/incomplete markers",
-                    f"Detected: {', '.join(capabilities)}",
-                    f"{len(set(all_functions))} unique functions already implemented",
-                    f"{len(set(all_classes))} classes defined",
-                ],
-                "suggested_stack": self._infer_stack(logic_sigs),
-                "suggested_name": dir_name.lower().replace(" ", "-"),
-                "effort_estimate": self._estimate_effort(len(code_files), fragment_density),
-                "priority_score": _score_priority(
-                    len(files), total_bytes, False, fragment_density, 0.0
-                ),
-                "source_files": [f.path for f in code_files[:10]],
-                "existing_functions": list(set(all_functions))[:20],
-                "existing_classes": list(set(all_classes))[:10],
-                "capabilities": capabilities,
-                "file_count": len(files),
-                "total_bytes": total_bytes,
-                "created_at": _now_iso(),
-            })
+            self._proposals.append(
+                {
+                    "scan_id": scan_id,
+                    "proposal_type": "PROGRAM",
+                    "category": "PROMOTE_PARTIAL",
+                    "domain": "CODE",
+                    "title": f"Promote '{dir_name}' to Full Application",
+                    "summary": (
+                        f"Directory '{dir_path}' contains {len(code_files)} code files "
+                        f"with {int(fragment_density * 100)}% fragment density. "
+                        f"Detected capabilities: {', '.join(capabilities)}. "
+                        f"This partial implementation has enough structure to become a "
+                        f"production application with cleanup and completion."
+                    ),
+                    "rationale": [
+                        f"{len(code_files)} code files with existing logic",
+                        f"{int(fragment_density * 100)}% contain TODO/WIP/incomplete markers",
+                        f"Detected: {', '.join(capabilities)}",
+                        f"{len(set(all_functions))} unique functions already implemented",
+                        f"{len(set(all_classes))} classes defined",
+                    ],
+                    "suggested_stack": self._infer_stack(logic_sigs),
+                    "suggested_name": dir_name.lower().replace(" ", "-"),
+                    "effort_estimate": self._estimate_effort(len(code_files), fragment_density),
+                    "priority_score": _score_priority(
+                        len(files), total_bytes, False, fragment_density, 0.0
+                    ),
+                    "source_files": [f.path for f in code_files[:10]],
+                    "existing_functions": list(set(all_functions))[:20],
+                    "existing_classes": list(set(all_classes))[:10],
+                    "capabilities": capabilities,
+                    "file_count": len(files),
+                    "total_bytes": total_bytes,
+                    "created_at": _now_iso(),
+                }
+            )
 
     def _detect_duplicate_logic(
         self,
@@ -474,32 +549,36 @@ class ProjectAdvisor:
 
         if len(duplicated) >= 5:
             total_bytes = sum(f.size_bytes for f in code_files)
-            self._proposals.append({
-                "scan_id": scan_id,
-                "proposal_type": "PROGRAM",
-                "category": "SHARED_LIBRARY",
-                "domain": "CODE",
-                "title": "Build Shared Utility Library",
-                "summary": (
-                    f"Found {len(duplicated)} functions duplicated across 3+ files. "
-                    f"Consolidating into a shared library would reduce maintenance "
-                    f"burden and create a single source of truth for core logic."
-                ),
-                "rationale": [
-                    f"{len(duplicated)} duplicate functions detected across {len(code_files)} files",
-                    "Top duplicates: " + ", ".join(list(duplicated.keys())[:8]),
-                    "Shared library would enable single import across all projects",
-                ],
-                "suggested_stack": ["Python 3.11", "setuptools", "PyPI (private)"],
-                "suggested_name": "echo-shared-utils",
-                "effort_estimate": "Small-Medium (1-3 days)",
-                "priority_score": min(100.0, 40.0 + len(duplicated) * 1.5),
-                "duplicate_functions": list(duplicated.keys())[:30],
-                "source_files": list({p for paths in list(duplicated.values())[:10] for p in paths})[:15],
-                "file_count": len(code_files),
-                "total_bytes": total_bytes,
-                "created_at": _now_iso(),
-            })
+            self._proposals.append(
+                {
+                    "scan_id": scan_id,
+                    "proposal_type": "PROGRAM",
+                    "category": "SHARED_LIBRARY",
+                    "domain": "CODE",
+                    "title": "Build Shared Utility Library",
+                    "summary": (
+                        f"Found {len(duplicated)} functions duplicated across 3+ files. "
+                        f"Consolidating into a shared library would reduce maintenance "
+                        f"burden and create a single source of truth for core logic."
+                    ),
+                    "rationale": [
+                        f"{len(duplicated)} duplicate functions detected across {len(code_files)} files",
+                        "Top duplicates: " + ", ".join(list(duplicated.keys())[:8]),
+                        "Shared library would enable single import across all projects",
+                    ],
+                    "suggested_stack": ["Python 3.11", "setuptools", "PyPI (private)"],
+                    "suggested_name": "echo-shared-utils",
+                    "effort_estimate": "Small-Medium (1-3 days)",
+                    "priority_score": min(100.0, 40.0 + len(duplicated) * 1.5),
+                    "duplicate_functions": list(duplicated.keys())[:30],
+                    "source_files": list(
+                        {p for paths in list(duplicated.values())[:10] for p in paths}
+                    )[:15],
+                    "file_count": len(code_files),
+                    "total_bytes": total_bytes,
+                    "created_at": _now_iso(),
+                }
+            )
 
     def _detect_orphaned_data(
         self,
@@ -528,34 +607,36 @@ class ProjectAdvisor:
             extensions = list(set(f.extension for f in data_files))
             dir_name = Path(dir_path).name
 
-            self._proposals.append({
-                "scan_id": scan_id,
-                "proposal_type": "PROGRAM",
-                "category": "DATA_VIEWER",
-                "domain": "DATA",
-                "title": f"Build Data Processor for '{dir_name}'",
-                "summary": (
-                    f"{len(data_files)} data files ({_human_size(total_bytes)}) in "
-                    f"'{dir_path}' have no processing code in the same directory. "
-                    f"Build a processor/viewer to make this data actionable."
-                ),
-                "rationale": [
-                    f"{len(data_files)} data files: {', '.join(extensions)}",
-                    f"Total size: {_human_size(total_bytes)}",
-                    "No code files found in same directory",
-                    "Data is currently read-only, inaccessible to AI systems",
-                ],
-                "suggested_stack": self._suggest_stack_for_extensions(extensions),
-                "suggested_name": f"{dir_name.lower().replace(' ', '-')}-processor",
-                "effort_estimate": "Small (0.5-1 day)",
-                "priority_score": _score_priority(
-                    len(data_files), total_bytes, False, 0.0, 1.0
-                ),
-                "source_files": [f.path for f in data_files[:10]],
-                "file_count": len(data_files),
-                "total_bytes": total_bytes,
-                "created_at": _now_iso(),
-            })
+            self._proposals.append(
+                {
+                    "scan_id": scan_id,
+                    "proposal_type": "PROGRAM",
+                    "category": "DATA_VIEWER",
+                    "domain": "DATA",
+                    "title": f"Build Data Processor for '{dir_name}'",
+                    "summary": (
+                        f"{len(data_files)} data files ({_human_size(total_bytes)}) in "
+                        f"'{dir_path}' have no processing code in the same directory. "
+                        f"Build a processor/viewer to make this data actionable."
+                    ),
+                    "rationale": [
+                        f"{len(data_files)} data files: {', '.join(extensions)}",
+                        f"Total size: {_human_size(total_bytes)}",
+                        "No code files found in same directory",
+                        "Data is currently read-only, inaccessible to AI systems",
+                    ],
+                    "suggested_stack": self._suggest_stack_for_extensions(extensions),
+                    "suggested_name": f"{dir_name.lower().replace(' ', '-')}-processor",
+                    "effort_estimate": "Small (0.5-1 day)",
+                    "priority_score": _score_priority(
+                        len(data_files), total_bytes, False, 0.0, 1.0
+                    ),
+                    "source_files": [f.path for f in data_files[:10]],
+                    "file_count": len(data_files),
+                    "total_bytes": total_bytes,
+                    "created_at": _now_iso(),
+                }
+            )
 
     def _detect_promoted_scripts(
         self,
@@ -565,7 +646,8 @@ class ProjectAdvisor:
     ) -> None:
         """Detect scripts that have grown into application scope."""
         large_scripts = [
-            f for f in files
+            f
+            for f in files
             if f.extension in {".py", ".js", ".ts", ".ps1"}
             and f.size_bytes > 15_000  # 15KB+ single-file script
         ]
@@ -574,49 +656,64 @@ class ProjectAdvisor:
             content = contents.get(f.path, "")
             sigs = _extract_logic_signatures(content)
 
-            capability_count = sum([
-                sigs["has_main"], sigs["has_cli"], sigs["has_api"],
-                sigs["has_db"], sigs["has_auth"],
-            ])
+            capability_count = sum(
+                [
+                    sigs["has_main"],
+                    sigs["has_cli"],
+                    sigs["has_api"],
+                    sigs["has_db"],
+                    sigs["has_auth"],
+                ]
+            )
             func_count = len(set(sigs["functions"]))
             class_count = len(set(sigs["classes"]))
 
             # Big script with multiple capabilities = promote to proper package
             if capability_count >= 3 or (func_count >= 15 and class_count >= 2):
                 fname = Path(f.path).stem
-                self._proposals.append({
-                    "scan_id": scan_id,
-                    "proposal_type": "PROGRAM",
-                    "category": "PROMOTE_SCRIPT",
-                    "domain": "CODE",
-                    "title": f"Promote '{f.filename}' to Package",
-                    "summary": (
-                        f"'{f.filename}' ({_human_size(f.size_bytes)}) is a monolithic script "
-                        f"with {func_count} functions, {class_count} classes, and "
-                        f"{capability_count} capability types. It has grown beyond script scope "
-                        f"and should be refactored into a proper package with CLI, tests, and docs."
-                    ),
-                    "rationale": [
-                        f"{func_count} functions, {class_count} classes in single file",
-                        f"File size: {_human_size(f.size_bytes)} (exceeds script threshold)",
-                        f"Capabilities: {[k for k,v in {'CLI': sigs['has_cli'], 'API': sigs['has_api'], 'DB': sigs['has_db'], 'Auth': sigs['has_auth']}.items() if v]}",
-                        "Refactoring would improve maintainability and testability",
-                    ],
-                    "suggested_stack": self._infer_stack([sigs]),
-                    "suggested_name": fname.lower().replace("_", "-"),
-                    "effort_estimate": "Medium (2-3 days refactor)",
-                    "priority_score": min(100.0, 35.0 + func_count * 0.8 + capability_count * 5),
-                    "source_files": [f.path],
-                    "existing_functions": sigs["functions"][:20],
-                    "existing_classes": sigs["classes"][:10],
-                    "capabilities": [k for k, v in {
-                        "cli": sigs["has_cli"], "api": sigs["has_api"],
-                        "db": sigs["has_db"], "auth": sigs["has_auth"],
-                    }.items() if v],
-                    "file_count": 1,
-                    "total_bytes": f.size_bytes,
-                    "created_at": _now_iso(),
-                })
+                self._proposals.append(
+                    {
+                        "scan_id": scan_id,
+                        "proposal_type": "PROGRAM",
+                        "category": "PROMOTE_SCRIPT",
+                        "domain": "CODE",
+                        "title": f"Promote '{f.filename}' to Package",
+                        "summary": (
+                            f"'{f.filename}' ({_human_size(f.size_bytes)}) is a monolithic script "
+                            f"with {func_count} functions, {class_count} classes, and "
+                            f"{capability_count} capability types. It has grown beyond script scope "
+                            f"and should be refactored into a proper package with CLI, tests, and docs."
+                        ),
+                        "rationale": [
+                            f"{func_count} functions, {class_count} classes in single file",
+                            f"File size: {_human_size(f.size_bytes)} (exceeds script threshold)",
+                            f"Capabilities: {[k for k, v in {'CLI': sigs['has_cli'], 'API': sigs['has_api'], 'DB': sigs['has_db'], 'Auth': sigs['has_auth']}.items() if v]}",
+                            "Refactoring would improve maintainability and testability",
+                        ],
+                        "suggested_stack": self._infer_stack([sigs]),
+                        "suggested_name": fname.lower().replace("_", "-"),
+                        "effort_estimate": "Medium (2-3 days refactor)",
+                        "priority_score": min(
+                            100.0, 35.0 + func_count * 0.8 + capability_count * 5
+                        ),
+                        "source_files": [f.path],
+                        "existing_functions": sigs["functions"][:20],
+                        "existing_classes": sigs["classes"][:10],
+                        "capabilities": [
+                            k
+                            for k, v in {
+                                "cli": sigs["has_cli"],
+                                "api": sigs["has_api"],
+                                "db": sigs["has_db"],
+                                "auth": sigs["has_auth"],
+                            }.items()
+                            if v
+                        ],
+                        "file_count": 1,
+                        "total_bytes": f.size_bytes,
+                        "created_at": _now_iso(),
+                    }
+                )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -772,6 +869,7 @@ def format_proposals_for_knowledge_forge(
 def store_proposals_to_db(db_path: str, proposals: list[dict[str, Any]]) -> int:
     """Store proposals to SQLite. Returns count stored."""
     import sqlite3
+
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
 
@@ -802,28 +900,37 @@ def store_proposals_to_db(db_path: str, proposals: list[dict[str, Any]]) -> int:
 
     count = 0
     for p in proposals:
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO project_proposals (
                 scan_id, proposal_type, category, domain, title, summary,
                 rationale, suggested_stack, suggested_name, effort_estimate,
                 priority_score, source_files, existing_functions, existing_classes,
                 capabilities, duplicate_functions, file_count, total_bytes, created_at
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        """, (
-            p.get("scan_id"), p.get("proposal_type"), p.get("category"),
-            p.get("domain"), p.get("title"), p.get("summary"),
-            json.dumps(p.get("rationale", [])),
-            json.dumps(p.get("suggested_stack", [])),
-            p.get("suggested_name"), p.get("effort_estimate"),
-            p.get("priority_score", 0),
-            json.dumps(p.get("source_files", [])),
-            json.dumps(p.get("existing_functions", [])),
-            json.dumps(p.get("existing_classes", [])),
-            json.dumps(p.get("capabilities", [])),
-            json.dumps(p.get("duplicate_functions", [])),
-            p.get("file_count", 0), p.get("total_bytes", 0),
-            p.get("created_at"),
-        ))
+        """,
+            (
+                p.get("scan_id"),
+                p.get("proposal_type"),
+                p.get("category"),
+                p.get("domain"),
+                p.get("title"),
+                p.get("summary"),
+                json.dumps(p.get("rationale", [])),
+                json.dumps(p.get("suggested_stack", [])),
+                p.get("suggested_name"),
+                p.get("effort_estimate"),
+                p.get("priority_score", 0),
+                json.dumps(p.get("source_files", [])),
+                json.dumps(p.get("existing_functions", [])),
+                json.dumps(p.get("existing_classes", [])),
+                json.dumps(p.get("capabilities", [])),
+                json.dumps(p.get("duplicate_functions", [])),
+                p.get("file_count", 0),
+                p.get("total_bytes", 0),
+                p.get("created_at"),
+            ),
+        )
         count += 1
 
     conn.commit()

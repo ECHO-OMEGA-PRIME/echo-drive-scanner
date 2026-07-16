@@ -1,0 +1,7 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m mypy --follow-imports=skip dashboard/api_models.py dashboard/security.py dashboard/server.py intelligence/function_library.py
+RETURN_CODE: 0
+
+STDOUT:
+Success: no issues found in 4 source files
+
+STDERR:

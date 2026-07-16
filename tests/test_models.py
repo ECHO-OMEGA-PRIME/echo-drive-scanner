@@ -11,14 +11,10 @@ from storage.models import (
     IntelligenceScore,
     KeeperStrategy,
     QueryMode,
-    Recommendation,
     RecommendationCategory,
-    Relationship,
     RelationshipType,
     ScanProgress,
-    ScanRecord,
     ScanStatus,
-    Severity,
 )
 
 

@@ -1,0 +1,175 @@
+{
+  "contract_version": "2.1.0",
+  "service_version": "2.1.0",
+  "capabilities": {
+    "echo.drivescan.status": {
+      "method": "GET",
+      "path": "/api/scan/status",
+      "input_schema": {"type": "object", "additionalProperties": false},
+      "output_schema": {
+        "type": "object",
+        "required": ["api_version", "status"],
+        "properties": {
+          "api_version": {"const": "2.1"},
+          "id": {"type": ["integer", "null"]},
+          "started_at": {"type": "string"},
+          "completed_at": {"type": ["string", "null"]},
+          "drives": {"type": "string"},
+          "profile": {"type": "string"},
+          "total_files": {"type": "integer", "minimum": 0},
+          "total_size_bytes": {"type": "integer", "minimum": 0},
+          "files_classified": {"type": "integer", "minimum": 0},
+          "files_skipped": {"type": "integer", "minimum": 0},
+          "duration_seconds": {"type": ["number", "null"], "minimum": 0},
+          "status": {"enum": ["no_scans", "running", "completed", "completed_with_warnings", "degraded", "failed", "cancelled"]},
+          "config": {"type": ["string", "null"]}
+        },
+        "additionalProperties": false
+      }
+    },
+    "echo.drivescan.results": {
+      "method": "GET",
+      "path": "/api/scan/{scan_id}/results",
+      "input_schema": {
+        "type": "object",
+        "required": ["scan_id"],
+        "properties": {"scan_id": {"type": "integer", "minimum": 1}},
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["api_version", "scan_id", "status", "total_files", "stages"],
+        "properties": {
+          "api_version": {"const": "2.1"},
+          "scan_id": {"type": "integer"},
+          "status": {"type": "string"},
+          "total_files": {"type": "integer", "minimum": 0},
+          "total_size_bytes": {"type": "integer", "minimum": 0},
+          "files_classified": {"type": "integer", "minimum": 0},
+          "duration_seconds": {"type": "number", "minimum": 0},
+          "domain_distribution": {"type": "object"},
+          "top_domains": {"type": "array"},
+          "recommendation_count": {"type": "integer", "minimum": 0},
+          "duplicate_clusters": {"type": "integer", "minimum": 0},
+          "wasted_bytes": {"type": "integer", "minimum": 0},
+          "avg_quality": {"type": "number"},
+          "avg_importance": {"type": "number"},
+          "high_risk_count": {"type": "integer", "minimum": 0},
+          "sensitive_count": {"type": "integer", "minimum": 0},
+          "stages": {"type": "array", "items": {"$ref": "#/$defs/stage"}}
+        },
+        "$defs": {
+          "stage": {
+            "type": "object",
+            "required": ["scan_id", "stage", "status", "warning_count"],
+            "properties": {
+              "scan_id": {"type": "integer"},
+              "stage": {"type": "string"},
+              "status": {"enum": ["running", "passed", "failed", "degraded", "skipped", "cancelled"]},
+              "started_at": {"type": ["string", "null"]},
+              "completed_at": {"type": ["string", "null"]},
+              "detail": {"type": ["string", "null"]},
+              "warning_count": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "echo.drivescan.files": {
+      "method": "GET",
+      "path": "/api/files",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "scan_id": {"type": "integer", "minimum": 1},
+          "domain": {"type": "string"},
+          "extension": {"type": "string"},
+          "search": {"type": "string", "maxLength": 200},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+          "offset": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      },
+      "output_schema": {
+        "type": "object",
+        "required": ["api_version", "scan_id", "files", "count"],
+        "properties": {
+          "api_version": {"const": "2.1"},
+          "scan_id": {"type": ["integer", "null"]},
+          "count": {"type": "integer", "minimum": 0},
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["file", "score"],
+              "properties": {
+                "file": {
+                  "type": "object",
+                  "required": ["path_id", "display_path", "protected", "filename", "size_bytes"],
+                  "properties": {
+                    "id": {"type": ["integer", "null"]},
+                    "scan_id": {"type": ["integer", "null"]},
+                    "path_id": {"type": "string", "pattern": "^[a-f0-9]{20}$"},
+                    "display_path": {"type": "string"},
+                    "drive": {"type": "string"},
+                    "protected": {"type": "boolean"},
+                    "filename": {"type": ["string", "null"]},
+                    "extension": {"type": ["string", "null"]},
+                    "size_bytes": {"type": "integer", "minimum": 0},
+                    "created_at": {"type": ["string", "null"]},
+                    "modified_at": {"type": ["string", "null"]},
+                    "accessed_at": {"type": ["string", "null"]},
+                    "mime_type": {"type": ["string", "null"]},
+                    "is_binary": {"type": "boolean"}
+                  },
+                  "additionalProperties": false
+                },
+                "score": {"type": ["object", "null"]}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "echo.drivescan.domains": {
+      "method": "GET",
+      "path": "/api/domains",
+      "input_schema": {"type": "object", "properties": {"scan_id": {"type": "integer", "minimum": 1}}, "additionalProperties": false},
+      "output_schema": {"type": "object", "required": ["api_version", "scan_id", "domains", "total_domains"], "properties": {"api_version": {"const": "2.1"}, "scan_id": {"type": ["integer", "null"]}, "domains": {"type": "array"}, "total_domains": {"type": "integer", "minimum": 0}}, "additionalProperties": false}
+    },
+    "echo.drivescan.duplicates": {
+      "method": "GET",
+      "path": "/api/duplicates",
+      "input_schema": {"type": "object", "properties": {"scan_id": {"type": "integer", "minimum": 1}}, "additionalProperties": false},
+      "output_schema": {"type": "object", "required": ["api_version", "scan_id", "clusters", "total_clusters", "total_wasted_bytes"], "properties": {"api_version": {"const": "2.1"}, "scan_id": {"type": ["integer", "null"]}, "clusters": {"type": "array"}, "total_clusters": {"type": "integer", "minimum": 0}, "total_wasted_bytes": {"type": "integer", "minimum": 0}}, "additionalProperties": false}
+    },
+    "echo.drivescan.recommendations": {
+      "method": "GET",
+      "path": "/api/recommendations",
+      "input_schema": {"type": "object", "properties": {"scan_id": {"type": "integer", "minimum": 1}}, "additionalProperties": false},
+      "output_schema": {"type": "object", "required": ["api_version", "scan_id", "recommendations", "total"], "properties": {"api_version": {"const": "2.1"}, "scan_id": {"type": ["integer", "null"]}, "recommendations": {"type": "array"}, "total": {"type": "integer", "minimum": 0}}, "additionalProperties": false}
+    },
+    "echo.drivescan.proposals": {
+      "method": "GET",
+      "path": "/api/proposals",
+      "input_schema": {"type": "object", "properties": {"scan_id": {"type": "integer", "minimum": 1}, "kind": {"enum": ["completion", "new_build"]}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, "additionalProperties": false},
+      "output_schema": {"type": "object", "required": ["api_version", "scan_id", "proposals", "count", "completion", "new_build", "queue_supported"], "properties": {"api_version": {"const": "2.1"}, "scan_id": {"type": ["integer", "null"]}, "kind": {"type": ["string", "null"]}, "proposals": {"type": "array"}, "count": {"type": "integer", "minimum": 0}, "completion": {"type": "integer", "minimum": 0}, "new_build": {"type": "integer", "minimum": 0}, "queue_supported": {"const": false}}, "additionalProperties": false}
+    },
+    "echo.drivescan.scan": {
+      "method": "POST",
+      "path": "/api/scan/start",
+      "input_schema": {"type": "object", "required": ["paths"], "properties": {"paths": {"type": "array", "minItems": 1, "maxItems": 32, "items": {"type": "string", "minLength": 1, "maxLength": 1024}}, "profile": {"enum": ["INTELLIGENCE", "INTEL_FAST", "INTEL_SECURITY", "INTEL_COMPLIANCE", "INTEL_OILFIELD", "DEDUP"], "default": "INTEL_FAST"}}, "additionalProperties": false},
+      "output_schema": {"type": "object", "required": ["api_version", "status", "scan_id", "run_id", "profile", "normalized_roots", "status_url", "stages_url", "accepted_at"], "properties": {"api_version": {"const": "2.1"}, "status": {"const": "accepted"}, "scan_id": {"type": "integer", "minimum": 1}, "run_id": {"type": "string"}, "profile": {"type": "string"}, "normalized_roots": {"type": "array", "items": {"type": "string"}}, "status_url": {"type": "string"}, "stages_url": {"type": "string"}, "accepted_at": {"type": "string"}}, "additionalProperties": false}
+    },
+    "echo.drivescan.storage": {
+      "method": "GET",
+      "path": "/api/storage/summary",
+      "input_schema": {"type": "object", "properties": {"scan_id": {"type": "integer", "minimum": 1}}, "additionalProperties": false},
+      "output_schema": {"type": "object", "required": ["api_version", "scan_id", "drives", "health_source"], "properties": {"api_version": {"const": "2.1"}, "scan_id": {"type": ["integer", "null"]}, "drives": {"type": "array"}, "health_source": {"enum": ["filesystem_only", "filesystem_capacity"]}}, "additionalProperties": false}
+    }
+  }
+}

@@ -15,9 +15,9 @@ import asyncio
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
-import socket
 import tempfile
 import time
 import urllib.error
@@ -53,6 +53,8 @@ REQUIRED_SECURITY_HEADERS = [
     "Permissions-Policy",
     "Strict-Transport-Security",
     "Content-Security-Policy",
+    "Cross-Origin-Resource-Policy",
+    "Cross-Origin-Opener-Policy",
 ]
 
 PROTECTED_PROBE = r"C:\Windows\Temp" if os.name == "nt" else "/etc/ssh"
@@ -130,7 +132,7 @@ def wait_for_health(proc: subprocess.Popen) -> bool:
     return False
 
 
-def run_checks() -> None:
+def run_checks(sample_dir: Path) -> None:
     # ── Health + security-header audit ──────────────────────────────────
     status, headers, payload, _ = http("GET", "/health")
     check("GET /health returns 200", status == 200, f"status={status}")
@@ -139,9 +141,23 @@ def run_checks() -> None:
         bool(payload) and payload.get("status") == "healthy",
         f"body_status={payload.get('status') if payload else None}",
     )
+    check(
+        "/health exposes versioned v2.1 contract",
+        bool(payload) and payload.get("api_version") == "2.1" and payload.get("version") == "2.1.0",
+        f"api_version={payload.get('api_version') if payload else None}",
+    )
+    check(
+        "/health reports exact scan count",
+        bool(payload) and payload.get("total_scans") == 1,
+        f"total_scans={payload.get('total_scans') if payload else None}",
+    )
+    check(
+        "/health does not expose the database filesystem path",
+        bool(payload) and str(PROJECT_ROOT) not in json.dumps(payload),
+    )
     missing = [h for h in REQUIRED_SECURITY_HEADERS if not headers.get(h)]
     check(
-        "all six security headers present on 200 response",
+        "all required security headers present on 200 response",
         not missing,
         f"missing={missing}" if missing else "",
     )
@@ -149,19 +165,48 @@ def run_checks() -> None:
     # ── Positive surface across input variations ────────────────────────
     status, _, payload, _ = http("GET", "/api/scan/status")
     check("GET /api/scan/status returns 200", status == 200, f"status={status}")
+    scan_id = payload.get("id") if payload else None
+    check("scan status returns a durable scan id", isinstance(scan_id, int) and scan_id > 0)
 
-    status, _, payload, _ = http("GET", "/api/files")
+    status, _, stage_payload, _ = http("GET", f"/api/scans/{scan_id}/stages")
+    stage_names = (
+        {stage.get("stage") for stage in stage_payload.get("stages", [])}
+        if stage_payload
+        else set()
+    )
+    check(
+        "run-specific stage outcomes are observable",
+        status == 200 and {"preflight", "classification", "finalization"}.issubset(stage_names),
+        f"stages={sorted(stage_names)}",
+    )
+
+    status, _, storage_payload, _ = http("GET", f"/api/storage/summary?scan_id={scan_id}")
+    check(
+        "storage summary reports capacity without fabricating SMART health",
+        status == 200
+        and bool(storage_payload)
+        and storage_payload.get("health_source") == "filesystem_capacity"
+        and all(drive.get("health") == "unknown" for drive in storage_payload.get("drives", [])),
+    )
+
+    status, _, payload, raw_files = http("GET", f"/api/files?scan_id={scan_id}")
     count = payload.get("count", 0) if payload else 0
-    check("GET /api/files (no filter) 200 with files", status == 200 and count >= 1,
-          f"status={status} count={count}")
+    check(
+        "GET /api/files (no filter) 200 with files",
+        status == 200 and count >= 1,
+        f"status={status} count={count}",
+    )
 
     status, _, payload, _ = http("GET", "/api/files?search=dup")
     check("GET /api/files?search=dup returns 200", status == 200, f"status={status}")
 
     status, _, payload, _ = http("GET", "/api/files?extension=.nomatch")
     empty_count = payload.get("count", -1) if payload else -1
-    check("GET /api/files with empty-result filter 200 and count 0",
-          status == 200 and empty_count == 0, f"status={status} count={empty_count}")
+    check(
+        "GET /api/files with empty-result filter 200 and count 0",
+        status == 200 and empty_count == 0,
+        f"status={status} count={empty_count}",
+    )
 
     for path in (
         "/api/domains",
@@ -181,9 +226,7 @@ def run_checks() -> None:
     print(f"  [info] duplicate clusters detected: {clusters}")
 
     # ── Negative cases ───────────────────────────────────────────────────
-    status, _, payload, _ = http(
-        "POST", "/api/scan/start", body={"paths": [PROTECTED_PROBE]}
-    )
+    status, _, payload, _ = http("POST", "/api/scan/start", body={"paths": [PROTECTED_PROBE]})
     check(
         "POST /api/scan/start with protected path returns 400 path_rejected",
         status == 400 and bool(payload) and payload.get("error") == "path_rejected",
@@ -195,6 +238,13 @@ def run_checks() -> None:
         "POST /api/recommendations/1/execute unconfirmed returns 403 action_disabled",
         status == 403 and bool(payload) and payload.get("error") == "action_disabled",
         f"status={status} error={payload.get('error') if payload else None}",
+    )
+
+    status, _, payload, _ = http("GET", f"/api/proposals?scan_id={scan_id}&queue=true")
+    check(
+        "proposal endpoint rejects legacy queue mutation parameter",
+        status == 400 and bool(payload) and payload.get("error") == "unknown_query_parameter",
+        f"status={status}",
     )
 
     status, _, _, _ = http("GET", "/api/definitely-not-a-route")
@@ -221,19 +271,27 @@ def main() -> int:
         print(f"[3/4] Launching staging server on port {STAGING_PORT}...")
         proc = subprocess.Popen(
             [
-                sys.executable, "-m", "uvicorn", "dashboard.server:app",
-                "--host", "127.0.0.1", "--port", str(STAGING_PORT),
-                "--log-level", "warning",
+                sys.executable,
+                "-m",
+                "uvicorn",
+                "dashboard.server:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(STAGING_PORT),
+                "--log-level",
+                "warning",
             ],
             cwd=str(PROJECT_ROOT),
             env={**os.environ, "DRIVESCAN_DB_PATH": str(db_path)},
         )
         if not wait_for_health(proc):
-            check("staging server became healthy", False,
-                  f"no /health 200 within {HEALTH_TIMEOUT_S}s")
+            check(
+                "staging server became healthy", False, f"no /health 200 within {HEALTH_TIMEOUT_S}s"
+            )
         else:
             print("[4/4] Server healthy — running checks:\n")
-            run_checks()
+            run_checks(sample_dir)
     finally:
         if proc is not None:
             proc.terminate()
@@ -257,8 +315,9 @@ def main() -> int:
         print(f"{name:<58} {'PASS' if passed else 'FAIL'}")
     print("-" * 72)
     failed = [r for r in RESULTS if not r[1]]
-    print(f"TOTAL: {len(RESULTS)} checks, {len(RESULTS) - len(failed)} passed, "
-          f"{len(failed)} failed")
+    print(
+        f"TOTAL: {len(RESULTS)} checks, {len(RESULTS) - len(failed)} passed, {len(failed)} failed"
+    )
     if failed:
         print("SMOKE RESULT: FAIL")
         return 1

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Any
 
@@ -29,7 +29,7 @@ from storage.models import (
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Text Normalization ───────────────────────────────────────────────────────
@@ -101,7 +101,9 @@ def _select_keeper_most_accessed(members: list[tuple[FileRecord, IntelligenceSco
     return best[0].id or 0
 
 
-def _select_keeper_highest_quality(members: list[tuple[FileRecord, IntelligenceScore | None]]) -> int:
+def _select_keeper_highest_quality(
+    members: list[tuple[FileRecord, IntelligenceScore | None]],
+) -> int:
     """Keep the file with the highest quality score."""
     scored = [(f, s) for f, s in members if s is not None]
     if not scored:
@@ -214,9 +216,7 @@ class Deduplicator:
             self.stats["semantic_clusters"] = len(semantic)
 
         # Calculate totals
-        self.stats["total_duplicates"] = sum(
-            max(0, c.file_count - 1) for c in self.clusters
-        )
+        self.stats["total_duplicates"] = sum(max(0, c.file_count - 1) for c in self.clusters)
         self.stats["total_wasted_bytes"] = sum(c.total_wasted_bytes for c in self.clusters)
 
         logger.info(
@@ -249,17 +249,19 @@ class Deduplicator:
 
             members_with_scores = [(f, scores.get(f.id or 0)) for f in group]
             keeper_id = self._select_keeper(members_with_scores)
-            keeper_size = next((f.size_bytes for f in group if f.id == keeper_id), 0)
+            next((f.size_bytes for f in group if f.id == keeper_id), 0)
             wasted = sum(f.size_bytes for f in group if f.id != keeper_id)
 
             members = []
             for f in group:
-                members.append(DuplicateMember(
-                    file_id=f.id or 0,
-                    is_keeper=1 if f.id == keeper_id else 0,
-                    file_path=f.path,
-                    size_bytes=f.size_bytes,
-                ))
+                members.append(
+                    DuplicateMember(
+                        file_id=f.id or 0,
+                        is_keeper=1 if f.id == keeper_id else 0,
+                        file_path=f.path,
+                        size_bytes=f.size_bytes,
+                    )
+                )
 
             cluster = DuplicateCluster(
                 cluster_hash=sha,
@@ -302,12 +304,14 @@ class Deduplicator:
 
             members = []
             for f in group:
-                members.append(DuplicateMember(
-                    file_id=f.id or 0,
-                    is_keeper=1 if f.id == keeper_id else 0,
-                    file_path=f.path,
-                    size_bytes=f.size_bytes,
-                ))
+                members.append(
+                    DuplicateMember(
+                        file_id=f.id or 0,
+                        is_keeper=1 if f.id == keeper_id else 0,
+                        file_path=f.path,
+                        size_bytes=f.size_bytes,
+                    )
+                )
 
             cluster = DuplicateCluster(
                 cluster_hash=f"near:{norm_h[:32]}",
@@ -363,7 +367,7 @@ class Deduplicator:
                 if not kw1:
                     continue
 
-                for f2 in group[i + 1:]:
+                for f2 in group[i + 1 :]:
                     fid2 = f2.id or 0
                     if fid2 in visited:
                         continue
@@ -383,12 +387,14 @@ class Deduplicator:
 
                     members = []
                     for f in sub_group:
-                        members.append(DuplicateMember(
-                            file_id=f.id or 0,
-                            is_keeper=1 if f.id == keeper_id else 0,
-                            file_path=f.path,
-                            size_bytes=f.size_bytes,
-                        ))
+                        members.append(
+                            DuplicateMember(
+                                file_id=f.id or 0,
+                                is_keeper=1 if f.id == keeper_id else 0,
+                                file_path=f.path,
+                                size_bytes=f.size_bytes,
+                            )
+                        )
 
                     cluster = DuplicateCluster(
                         cluster_hash=f"sem:{topic_key}:{fid1}",

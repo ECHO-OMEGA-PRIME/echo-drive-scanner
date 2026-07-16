@@ -2,12 +2,18 @@
 Echo Scanner Checkpoint — Resume interrupted scans from last position.
 Stores progress per scan_id in SQLite. On restart, skips already-processed files.
 """
+
 from __future__ import annotations
-import sqlite3, time, json, os
+
+import json
+import os
+import sqlite3
+import time
 from pathlib import Path
+
 from loguru import logger
 
-LOCK_DIR = Path(__file__).parent.parent / 'locks'
+LOCK_DIR = Path(__file__).parent.parent / "locks"
 LOCK_DIR.mkdir(exist_ok=True)
 
 
@@ -15,14 +21,14 @@ class ScanLock:
     """File-based lock to prevent two processes scanning same drive."""
 
     def __init__(self, drive: str):
-        safe = drive.replace(':', '').replace('\\', '').replace('/', '')
-        self.lock_file = LOCK_DIR / f'scan_{safe}.lock'
+        safe = drive.replace(":", "").replace("\\", "").replace("/", "")
+        self.lock_file = LOCK_DIR / f"scan_{safe}.lock"
 
     def acquire(self) -> bool:
         if self.lock_file.exists():
             try:
                 data = json.loads(self.lock_file.read_text())
-                pid = data.get('pid', 0)
+                pid = data.get("pid", 0)
                 # Check if that process is still alive
                 try:
                     os.kill(pid, 0)
@@ -33,7 +39,7 @@ class ScanLock:
                     logger.info("Removing stale lock from PID {}", pid)
             except Exception:
                 pass
-        self.lock_file.write_text(json.dumps({'pid': os.getpid(), 'ts': time.time()}))
+        self.lock_file.write_text(json.dumps({"pid": os.getpid(), "ts": time.time()}))
         return True
 
     def release(self):
@@ -76,23 +82,29 @@ class ScanCheckpoint:
 
     def save(self, scan_id: int, drive: str, last_path: str, files_processed: int, batches: int):
         conn = sqlite3.connect(str(self.db_path))
-        conn.execute("""
+        conn.execute(
+            """
             INSERT OR REPLACE INTO scan_checkpoints
             (scan_id, drive, last_path, files_processed, batches_committed, updated_at)
             VALUES (?, ?, ?, ?, ?, datetime('now'))
-        """, (scan_id, drive, last_path, files_processed, batches))
+        """,
+            (scan_id, drive, last_path, files_processed, batches),
+        )
         conn.commit()
         conn.close()
 
     def load(self, scan_id: int, drive: str) -> dict | None:
         conn = sqlite3.connect(str(self.db_path))
-        row = conn.execute("""
+        row = conn.execute(
+            """
             SELECT last_path, files_processed, batches_committed
             FROM scan_checkpoints WHERE scan_id=? AND drive=?
-        """, (scan_id, drive)).fetchone()
+        """,
+            (scan_id, drive),
+        ).fetchone()
         conn.close()
         if row:
-            return {'last_path': row[0], 'files_processed': row[1], 'batches': row[2]}
+            return {"last_path": row[0], "files_processed": row[1], "batches": row[2]}
         return None
 
     def clear(self, scan_id: int):
@@ -105,9 +117,12 @@ class ScanCheckpoint:
 def check_disk_space(db_path: Path, min_gb: float = 5.0) -> tuple[bool, float]:
     """Check free space on the drive hosting the DB. Returns (ok, free_gb)."""
     import shutil
+
     stat = shutil.disk_usage(str(db_path.parent))
-    free_gb = stat.free / (1024 ** 3)
+    free_gb = stat.free / (1024**3)
     if free_gb < min_gb:
-        logger.warning("Low disk space on DB drive: {:.1f}GB free (minimum {:.1f}GB)", free_gb, min_gb)
+        logger.warning(
+            "Low disk space on DB drive: {:.1f}GB free (minimum {:.1f}GB)", free_gb, min_gb
+        )
         return False, free_gb
     return True, free_gb

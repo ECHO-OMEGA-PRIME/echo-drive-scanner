@@ -68,9 +68,7 @@ def test_validate_scan_path_rejects_protected():
 
 
 def test_validate_scan_path_rejects_outside_allowlist(tmp_path):
-    ok, reason = validate_scan_path(
-        str(tmp_path), allowlist=[str(tmp_path / "only_here")]
-    )
+    ok, reason = validate_scan_path(str(tmp_path), allowlist=[str(tmp_path / "only_here")])
     assert not ok
     assert "allowlist" in reason
 
@@ -99,4 +97,5 @@ def test_scan_start_rejects_protected_path(client):
     assert resp.status_code == 400
     payload = resp.json()
     assert payload["error"] == "path_rejected"
-    assert payload["path"] == PROTECTED_TARGET
+    assert payload["path_id"] == "redacted"
+    assert PROTECTED_TARGET not in resp.text

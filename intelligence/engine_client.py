@@ -21,7 +21,6 @@ import hashlib
 import time
 from collections import deque
 from enum import Enum
-from typing import Any
 
 import aiohttp
 from loguru import logger
@@ -52,6 +51,7 @@ from storage.models import (
 
 class CircuitState(Enum):
     """Circuit breaker states."""
+
     CLOSED = "closed"  # Normal operation
     OPEN = "open"  # Broken, reject requests
     HALF_OPEN = "half_open"  # Testing recovery
@@ -215,7 +215,9 @@ class EngineClient:
             # Too many failures, open circuit
             self._circuit_state = CircuitState.OPEN
             self._circuit_open_until = time.time() + 60.0
-            logger.error(f"Circuit breaker: CLOSED → OPEN ({self._circuit_failures} consecutive failures)")
+            logger.error(
+                f"Circuit breaker: CLOSED → OPEN ({self._circuit_failures} consecutive failures)"
+            )
 
     def _record_latency(self, ms: float) -> None:
         """Record request latency for metrics."""
@@ -279,10 +281,14 @@ class EngineClient:
                 start_time = time.time()
 
                 if method == "GET":
-                    async with self.session.get(url, headers={"X-Echo-API-Key": ENGINE_API_KEY}) as resp:
+                    async with self.session.get(
+                        url, headers={"X-Echo-API-Key": ENGINE_API_KEY}
+                    ) as resp:
                         data = await resp.json()
                 else:  # POST
-                    async with self.session.post(url, json=json_data, headers={"X-Echo-API-Key": ENGINE_API_KEY}) as resp:
+                    async with self.session.post(
+                        url, json=json_data, headers={"X-Echo-API-Key": ENGINE_API_KEY}
+                    ) as resp:
                         data = await resp.json()
 
                 latency_ms = (time.time() - start_time) * 1000
@@ -290,14 +296,14 @@ class EngineClient:
 
                 # Check for rate limit or server errors
                 if resp.status == 401:
-                        logger.debug("Engine API 401 — check API key")
-                        return {"success": False, "error": "Unauthorized"}
+                    logger.debug("Engine API 401 — check API key")
+                    return {"success": False, "error": "Unauthorized"}
                 if resp.status == 429 or resp.status >= 500:
                     if attempt < MAX_RETRIES - 1:
-                        backoff = RETRY_BACKOFF_BASE ** attempt
+                        backoff = RETRY_BACKOFF_BASE**attempt
                         logger.warning(
                             f"Request failed: {resp.status} {resp.reason} | "
-                            f"retry {attempt+1}/{MAX_RETRIES} after {backoff}s"
+                            f"retry {attempt + 1}/{MAX_RETRIES} after {backoff}s"
                         )
                         await asyncio.sleep(backoff)
                         continue
@@ -313,19 +319,21 @@ class EngineClient:
                 self._errors += 1
                 return {"success": False, "error": f"HTTP {resp.status}"}
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 last_error = "Request timeout"
                 if attempt < MAX_RETRIES - 1:
-                    backoff = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning(f"Timeout | retry {attempt+1}/{MAX_RETRIES} after {backoff}s")
+                    backoff = RETRY_BACKOFF_BASE**attempt
+                    logger.warning(f"Timeout | retry {attempt + 1}/{MAX_RETRIES} after {backoff}s")
                     await asyncio.sleep(backoff)
                     continue
 
             except aiohttp.ClientError as e:
                 last_error = str(e)
                 if attempt < MAX_RETRIES - 1:
-                    backoff = RETRY_BACKOFF_BASE ** attempt
-                    logger.warning(f"Client error: {e} | retry {attempt+1}/{MAX_RETRIES} after {backoff}s")
+                    backoff = RETRY_BACKOFF_BASE**attempt
+                    logger.warning(
+                        f"Client error: {e} | retry {attempt + 1}/{MAX_RETRIES} after {backoff}s"
+                    )
                     await asyncio.sleep(backoff)
                     continue
 
@@ -669,7 +677,7 @@ class EngineClient:
                             confidence=0.0,
                             rationale=f"Error: {str(e)[:200]}",
                         ),
-                        query_used=query if 'query' in locals() else "",
+                        query_used=query if "query" in locals() else "",
                         latency_ms=0.0,
                     )
 
@@ -705,9 +713,7 @@ class EngineClient:
         cache_hit_rate = (
             self._cache_hits / self._total_requests if self._total_requests > 0 else 0.0
         )
-        error_rate = (
-            self._errors / self._total_requests if self._total_requests > 0 else 0.0
-        )
+        error_rate = self._errors / self._total_requests if self._total_requests > 0 else 0.0
 
         # Calculate latency percentiles
         p50 = p95 = p99 = 0.0

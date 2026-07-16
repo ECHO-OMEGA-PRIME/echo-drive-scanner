@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-from functools import partial
 import hashlib
 import re
 import sqlite3
@@ -43,6 +42,7 @@ from storage.models import FileSample
 # Try to import xxhash, fallback to hashlib
 try:
     import xxhash
+
     HAS_XXHASH = True
 except ImportError:
     HAS_XXHASH = False
@@ -51,18 +51,21 @@ except ImportError:
 # Optional dependencies for rich content extraction
 try:
     import fitz  # PyMuPDF
+
     HAS_FITZ = True
 except ImportError:
     HAS_FITZ = False
 
 try:
     from docx import Document
+
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
 
 try:
     from openpyxl import load_workbook
+
     HAS_OPENPYXL = True
 except ImportError:
     HAS_OPENPYXL = False
@@ -70,14 +73,84 @@ except ImportError:
 
 # Common English stopwords to filter out
 STOPWORDS = {
-    "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
-    "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
-    "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
-    "or", "an", "will", "my", "one", "all", "would", "there", "their",
-    "what", "so", "up", "out", "if", "about", "who", "get", "which", "go",
-    "me", "when", "make", "can", "like", "time", "no", "just", "him", "know",
-    "take", "people", "into", "year", "your", "good", "some", "could", "them",
-    "see", "other", "than", "then", "now", "look", "only", "come", "its", "over",
+    "the",
+    "be",
+    "to",
+    "of",
+    "and",
+    "a",
+    "in",
+    "that",
+    "have",
+    "i",
+    "it",
+    "for",
+    "not",
+    "on",
+    "with",
+    "he",
+    "as",
+    "you",
+    "do",
+    "at",
+    "this",
+    "but",
+    "his",
+    "by",
+    "from",
+    "they",
+    "we",
+    "say",
+    "her",
+    "she",
+    "or",
+    "an",
+    "will",
+    "my",
+    "one",
+    "all",
+    "would",
+    "there",
+    "their",
+    "what",
+    "so",
+    "up",
+    "out",
+    "if",
+    "about",
+    "who",
+    "get",
+    "which",
+    "go",
+    "me",
+    "when",
+    "make",
+    "can",
+    "like",
+    "time",
+    "no",
+    "just",
+    "him",
+    "know",
+    "take",
+    "people",
+    "into",
+    "year",
+    "your",
+    "good",
+    "some",
+    "could",
+    "them",
+    "see",
+    "other",
+    "than",
+    "then",
+    "now",
+    "look",
+    "only",
+    "come",
+    "its",
+    "over",
 }
 
 
@@ -98,14 +171,11 @@ class ContentSampler:
         10-20x faster than sequential sampling for large batches."""
         loop = asyncio.get_event_loop()
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            tasks = [
-                loop.run_in_executor(executor, self.sample_file, p)
-                for p in paths
-            ]
+            tasks = [loop.run_in_executor(executor, self.sample_file, p) for p in paths]
             results = await asyncio.gather(*tasks, return_exceptions=True)
         # Filter exceptions
         out = []
-        for p, r in zip(paths, results):
+        for _p, r in zip(paths, results, strict=False):
             if isinstance(r, Exception):
                 out.append(None)
             else:
@@ -127,7 +197,6 @@ class ContentSampler:
             # Basic file stats
             stat = path.stat()
             size = stat.st_size
-            modified = stat.st_mtime
             extension = path.suffix.lower()
 
             # Read file signature (first 16 bytes)
@@ -287,6 +356,7 @@ class ContentSampler:
         """Sample JSON file and extract keys."""
         try:
             import json
+
             with path.open("r", encoding="utf-8", errors="ignore") as f:
                 content = f.read(SAMPLE_SIZE)
                 # Try to parse as JSON to extract keys
@@ -400,7 +470,7 @@ class ContentSampler:
             List of top keywords by frequency
         """
         # Remove punctuation, split on whitespace
-        words = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', text.lower())
+        words = re.findall(r"\b[a-zA-Z_][a-zA-Z0-9_]*\b", text.lower())
 
         # Filter stopwords and short words
         filtered = [w for w in words if w not in STOPWORDS and len(w) >= 3]
@@ -423,19 +493,21 @@ class ContentSampler:
         keywords = []
 
         # Extract import statements (Python)
-        imports = re.findall(r'^\s*(?:from|import)\s+([\w.]+)', text, re.MULTILINE)
+        imports = re.findall(r"^\s*(?:from|import)\s+([\w.]+)", text, re.MULTILINE)
         keywords.extend(imports)
 
         # Extract function definitions
-        functions = re.findall(r'^\s*(?:def|function|func|fn)\s+(\w+)', text, re.MULTILINE)
+        functions = re.findall(r"^\s*(?:def|function|func|fn)\s+(\w+)", text, re.MULTILINE)
         keywords.extend(functions)
 
         # Extract class definitions
-        classes = re.findall(r'^\s*class\s+(\w+)', text, re.MULTILINE)
+        classes = re.findall(r"^\s*class\s+(\w+)", text, re.MULTILINE)
         keywords.extend(classes)
 
         # Extract common code keywords
-        code_keywords = re.findall(r'\b(?:async|await|return|yield|const|let|var|struct|interface|type|enum)\b', text)
+        code_keywords = re.findall(
+            r"\b(?:async|await|return|yield|const|let|var|struct|interface|type|enum)\b", text
+        )
         keywords.extend(code_keywords)
 
         # Add general text keywords as fallback
@@ -554,10 +626,8 @@ class ContentSampler:
         try:
             stat = path.stat()
             size = stat.st_size
-            modified = stat.st_mtime
         except Exception:
             size = 0
-            modified = 0.0
 
         return FileSample(
             path=str(path),

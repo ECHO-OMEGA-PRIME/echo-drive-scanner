@@ -14,8 +14,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from datetime import datetime, timezone
-from typing import Any
+from datetime import UTC, datetime
 
 from loguru import logger
 
@@ -37,7 +36,7 @@ from storage.models import (
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _days_since(iso_str: str | None) -> int:
@@ -47,8 +46,8 @@ def _days_since(iso_str: str | None) -> int:
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        delta = datetime.now(timezone.utc) - dt
+            dt = dt.replace(tzinfo=UTC)
+        delta = datetime.now(UTC) - dt
         return max(0, delta.days)
     except (ValueError, TypeError):
         return 9999
@@ -57,7 +56,7 @@ def _days_since(iso_str: str | None) -> int:
 # ── Shared Location Detection ────────────────────────────────────────────────
 
 SHARED_PATH_PATTERNS = [
-    r"\\\\",               # UNC paths
+    r"\\\\",  # UNC paths
     r"[/\\]public[/\\]",
     r"[/\\]shared[/\\]",
     r"[/\\]common[/\\]",
@@ -123,12 +122,14 @@ def calculate_quality(
         has_sections = sample.count("\n\n") > 2
         has_lists = bool(re.search(r"^\s*[-*]\s|^\s*\d+\.\s", sample, re.MULTILINE))
         has_code = bool(re.search(r"```|def\s|class\s|function\s|import\s", sample))
-        structure_score = sum([
-            30.0 if has_headers else 0.0,
-            25.0 if has_sections else 0.0,
-            25.0 if has_lists else 0.0,
-            20.0 if has_code else 0.0,
-        ])
+        structure_score = sum(
+            [
+                30.0 if has_headers else 0.0,
+                25.0 if has_sections else 0.0,
+                25.0 if has_lists else 0.0,
+                20.0 if has_code else 0.0,
+            ]
+        )
     factors["structure_score"] = structure_score
 
     # Engine match count
@@ -155,10 +156,7 @@ def calculate_quality(
     factors["completeness"] = completeness
 
     # Weighted sum
-    total = sum(
-        factors.get(k, 0.0) * w
-        for k, w in QUALITY_WEIGHTS.items()
-    )
+    total = sum(factors.get(k, 0.0) * w for k, w in QUALITY_WEIGHTS.items())
     return round(min(100.0, max(0.0, total)), 1)
 
 
@@ -230,10 +228,7 @@ def calculate_importance(
     else:
         factors["path_depth"] = 15.0
 
-    total = sum(
-        factors.get(k, 0.0) * w
-        for k, w in IMPORTANCE_WEIGHTS.items()
-    )
+    total = sum(factors.get(k, 0.0) * w for k, w in IMPORTANCE_WEIGHTS.items())
     return round(min(100.0, max(0.0, total)), 1)
 
 
@@ -273,7 +268,9 @@ def calculate_sensitivity(
 
     # Filename patterns
     filename_lower = (file.filename or "").lower()
-    if any(kw in filename_lower for kw in ["password", "secret", "credential", "private_key", "token"]):
+    if any(
+        kw in filename_lower for kw in ["password", "secret", "credential", "private_key", "token"]
+    ):
         score = max(score, 85.0)
     elif any(kw in filename_lower for kw in ["ssn", "social_security", "tax_return", "w2", "1099"]):
         score = max(score, 80.0)
@@ -377,7 +374,10 @@ def calculate_risk(
         risk += 20.0
 
     # Config/env files in non-secure locations
-    if ext in {".env", ".cfg", ".ini", ".conf"} and "password" in (file.content_sample or "").lower():
+    if (
+        ext in {".env", ".cfg", ".ini", ".conf"}
+        and "password" in (file.content_sample or "").lower()
+    ):
         risk += 35.0
 
     return round(min(100.0, max(0.0, risk)), 1)
@@ -497,7 +497,9 @@ class IntelligenceScorer:
             dup_count = duplicate_counts.get(file_id, 0)
 
             score = self.score_file(
-                file, classifications, scan_id,
+                file,
+                classifications,
+                scan_id,
                 cluster=cluster,
                 reference_count=ref_count,
                 duplicate_count=dup_count,

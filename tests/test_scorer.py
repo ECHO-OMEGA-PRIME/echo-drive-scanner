@@ -1,10 +1,9 @@
 """Tests for intelligence scoring module."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from intelligence.scorer import (
     IntelligenceScorer,
-    calculate_importance,
     calculate_overall,
     calculate_quality,
     calculate_risk,
@@ -17,7 +16,7 @@ from storage.models import Classification, DuplicateCluster, FileRecord
 
 def _days_ago(days: int) -> str:
     """ISO-8601 UTC timestamp `days` days before now."""
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    return (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
 
 def _make_file(**kwargs) -> FileRecord:
@@ -61,7 +60,8 @@ def test_quality_rich_file():
     """Rich file with content and classifications should score high."""
     f = _make_file(
         size_bytes=50000,
-        content_sample="# Header\n\nThis is a document.\n\n## Section\n\n- Item 1\n- Item 2\n\ndef hello():\n    pass\n" * 10,
+        content_sample="# Header\n\nThis is a document.\n\n## Section\n\n- Item 1\n- Item 2\n\ndef hello():\n    pass\n"
+        * 10,
         sha256="abc123",
         mime_type="text/plain",
     )

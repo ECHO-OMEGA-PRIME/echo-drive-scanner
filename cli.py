@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
-from pathlib import Path
 
 from loguru import logger
 
@@ -29,12 +27,16 @@ def setup_logging(verbose: bool = False) -> None:
     """Configure loguru logging."""
     logger.remove()
     level = "DEBUG" if verbose else "INFO"
-    logger.add(sys.stderr, level=level, format=(
-        "<green>{time:HH:mm:ss}</green> | "
-        "<level>{level: <8}</level> | "
-        "<cyan>{name}</cyan>:<cyan>{function}</cyan> | "
-        "<level>{message}</level>"
-    ))
+    logger.add(
+        sys.stderr,
+        level=level,
+        format=(
+            "<green>{time:HH:mm:ss}</green> | "
+            "<level>{level: <8}</level> | "
+            "<cyan>{name}</cyan>:<cyan>{function}</cyan> | "
+            "<level>{message}</level>"
+        ),
+    )
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     logger.add(
         LOG_DIR / "scanner_{time}.log",
@@ -54,84 +56,108 @@ def build_parser() -> argparse.ArgumentParser:
     # Scan mode
     scan_group = parser.add_argument_group("Scan Options")
     scan_group.add_argument(
-        "--drives", nargs="+", metavar="DRIVE",
+        "--drives",
+        nargs="+",
+        metavar="DRIVE",
         help="Drives to scan (e.g., O: I: F:)",
     )
     scan_group.add_argument(
-        "--path", type=str,
+        "--path",
+        type=str,
         help="Specific folder path to scan",
     )
     scan_group.add_argument(
-        "--profile", type=str, default="INTELLIGENCE",
+        "--profile",
+        type=str,
+        default="INTELLIGENCE",
         choices=list(SCAN_PROFILES.keys()),
         help="Scan profile (default: INTELLIGENCE)",
     )
     scan_group.add_argument(
-        "--intelligence", action="store_true",
+        "--intelligence",
+        action="store_true",
         help="Enable intelligence classification (shorthand for --profile INTELLIGENCE)",
     )
     scan_group.add_argument(
-        "--domains", type=str,
+        "--domains",
+        type=str,
         help="Comma-separated list of domains to focus on (e.g., CYBER,FIN,LG)",
     )
     scan_group.add_argument(
-        "--max-files", type=int, default=0,
+        "--max-files",
+        type=int,
+        default=0,
         help="Maximum number of files to scan (0=unlimited)",
     )
     scan_group.add_argument(
-        "--max-depth", type=int, default=0,
+        "--max-depth",
+        type=int,
+        default=0,
         help="Maximum directory depth (0=unlimited)",
     )
 
     # Results & Recommendations
     results_group = parser.add_argument_group("Results")
     results_group.add_argument(
-        "--recommendations", action="store_true",
+        "--recommendations",
+        action="store_true",
         help="Show recommendations from last scan",
     )
     results_group.add_argument(
-        "--execute-recommendation", type=str, metavar="CATEGORY",
+        "--execute-recommendation",
+        type=str,
+        metavar="CATEGORY",
         help="Execute recommendations of given category (archive, delete, etc.)",
     )
     results_group.add_argument(
-        "--scan-id", type=int,
+        "--scan-id",
+        type=int,
         help="Specify scan ID for results/recommendations",
     )
     results_group.add_argument(
-        "--summary", action="store_true",
+        "--summary",
+        action="store_true",
         help="Show scan summary",
     )
     results_group.add_argument(
-        "--list-scans", action="store_true",
+        "--list-scans",
+        action="store_true",
         help="List all scans",
     )
     results_group.add_argument(
-        "--export-report", action="store_true",
+        "--export-report",
+        action="store_true",
         help="Export full intelligence report as JSON",
     )
 
     # Deep Analysis
     deep_group = parser.add_argument_group("Deep Analysis")
     deep_group.add_argument(
-        "--deep-analyze", nargs="+", metavar="FILE",
+        "--deep-analyze",
+        nargs="+",
+        metavar="FILE",
         help="Deep-analyze specific files",
     )
 
     # Dashboard
     dash_group = parser.add_argument_group("Dashboard")
     dash_group.add_argument(
-        "--dashboard", action="store_true",
+        "--dashboard",
+        action="store_true",
         help="Start the analytics dashboard after scan (or standalone)",
     )
     dash_group.add_argument(
-        "--port", type=int, default=DASHBOARD_PORT,
+        "--port",
+        type=int,
+        default=DASHBOARD_PORT,
         help=f"Dashboard port (default: {DASHBOARD_PORT})",
     )
 
     # Cloud
     cloud_group = parser.add_argument_group("Cloud")
     cloud_group.add_argument(
-        "--upload-cloud", action="store_true",
+        "--upload-cloud",
+        action="store_true",
         help="Upload scan results to cloud worker",
     )
 
@@ -168,9 +194,9 @@ async def cmd_scan(args: argparse.Namespace) -> int:
     # Print summary
     summary = orchestrator.get_scan_summary(scan_id)
     if summary:
-        print(f"\n{'='*60}")
+        print(f"\n{'=' * 60}")
         print(f"SCAN COMPLETE — ID: {scan_id}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
         print(f"  Files:        {summary.get('total_files', 0):,}")
         print(f"  Size:         {summary.get('total_size_bytes', 0) / (1024**3):.2f} GB")
         print(f"  Classified:   {summary.get('files_classified', 0):,}")
@@ -179,7 +205,7 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         print(f"  Recs:         {summary.get('recommendation_count', 0)}")
         print(f"  High Risk:    {summary.get('high_risk_count', 0)}")
         print(f"  Sensitive:    {summary.get('sensitive_count', 0)}")
-        print(f"{'='*60}")
+        print(f"{'=' * 60}")
 
     # Upload to cloud if requested
     if args.upload_cloud:
@@ -215,7 +241,7 @@ def cmd_recommendations(args: argparse.Namespace) -> int:
     reset = "\033[0m"
 
     print(f"\nRecommendations for Scan #{scan_id}:")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     for i, rec in enumerate(recs, 1):
         color = severity_colors.get(rec.severity, "")
@@ -224,9 +250,9 @@ def cmd_recommendations(args: argparse.Namespace) -> int:
         print(f"  Files:     {rec.affected_count}")
         print(f"  Impact:    {rec.estimated_impact}")
         if rec.auto_executable:
-            print(f"  Auto-exec: YES")
+            print("  Auto-exec: YES")
         else:
-            print(f"  Review:    Required")
+            print("  Review:    Required")
         print(f"  Command:   {rec.action_command}")
 
     return 0
@@ -250,7 +276,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
         return 1
 
     print(f"\nScan #{summary.scan_id} Summary")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     print(f"  Status:       {summary.status}")
     print(f"  Files:        {summary.total_files:,}")
     print(f"  Size:         {summary.total_size_bytes / (1024**3):.2f} GB")
@@ -265,7 +291,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
     print(f"  Recs:         {summary.recommendation_count}")
 
     if summary.domain_distribution:
-        print(f"\n  Domain Distribution:")
+        print("\n  Domain Distribution:")
         sorted_domains = sorted(
             summary.domain_distribution.items(),
             key=lambda x: x[1],
@@ -287,7 +313,9 @@ def cmd_list_scans(args: argparse.Namespace) -> int:
         print("No scans found.")
         return 0
 
-    print(f"\n{'ID':>4}  {'Status':<10}  {'Files':>8}  {'Classified':>10}  {'Duration':>8}  {'Started'}")
+    print(
+        f"\n{'ID':>4}  {'Status':<10}  {'Files':>8}  {'Classified':>10}  {'Duration':>8}  {'Started'}"
+    )
     print("-" * 75)
     for scan in scans:
         duration_str = f"{scan.duration_seconds:.0f}s" if scan.duration_seconds else "-"
@@ -303,8 +331,9 @@ def cmd_list_scans(args: argparse.Namespace) -> int:
 async def cmd_dashboard(args: argparse.Namespace) -> int:
     """Start the analytics dashboard."""
     try:
-        from dashboard.server import create_app
         import uvicorn
+
+        from dashboard.server import create_app
 
         app = create_app(DB_PATH)
         port = args.port or DASHBOARD_PORT

@@ -23,7 +23,7 @@ import json
 import os
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,22 +31,29 @@ import aiohttp
 from loguru import logger
 
 from config import (
+    DB_PATH,
     DRIVE_INTELLIGENCE_URL,
     ENGINE_API_KEY,
+    ENGINE_RUNTIME_URL,
     KNOWLEDGE_FORGE_URL,
-    WORKER_SYNC_ENABLED,
-    WORKER_PUSH_BATCH_SIZE,
-    DB_PATH,
-    LOG_DIR,
     SCAN_PROFILES,
+    WORKER_PUSH_BATCH_SIZE,
+    WORKER_SYNC_ENABLED,
     ScanConfig,
     is_protected_path,
     validate_scan_path,
 )
+from intelligence.checkpoint import check_disk_space
 from intelligence.classifier import ClassificationPipeline
 from intelligence.content_sampler import ContentSampler
 from intelligence.deduplicator import Deduplicator
 from intelligence.engine_client import EngineClient
+from intelligence.function_library import extract_all as extract_libraries
+from intelligence.project_advisor import (
+    ProjectAdvisor,
+    format_proposals_for_knowledge_forge,
+    store_proposals_to_db,
+)
 from intelligence.recommender import RecommendationEngine
 from intelligence.relationship_mapper import RelationshipMapper
 from intelligence.scorer import IntelligenceScorer
@@ -57,15 +64,11 @@ from storage.models import (
     FileRecord,
     IntelligenceScore,
     ScanProgress,
-    ScanStatus,
 )
-from intelligence.project_advisor import ProjectAdvisor, format_proposals_for_knowledge_forge, store_proposals_to_db
-from intelligence.function_library import extract_all as extract_libraries
-from intelligence.checkpoint import ScanLock, ScanCheckpoint, check_disk_space
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── File Discovery ───────────────────────────────────────────────────────────
@@ -88,9 +91,16 @@ def discover_files(
     """
     discovered: list[Path] = []
     skip_dirs = {
-        ".git", "__pycache__", "node_modules", ".venv", "venv",
-        ".hf_cache", ".playwright-mcp", "$Recycle.Bin",
-        "System Volume Information", "Windows",
+        ".git",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".hf_cache",
+        ".playwright-mcp",
+        "$Recycle.Bin",
+        "System Volume Information",
+        "Windows",
     }
 
     for root_path_str in paths:
@@ -113,7 +123,8 @@ def discover_files(
         for dirpath, dirnames, filenames in os.walk(root_path, topdown=True):
             # Prune skip directories and protected subtrees
             dirnames[:] = [
-                d for d in dirnames
+                d
+                for d in dirnames
                 if d not in skip_dirs
                 and not d.startswith(".")
                 and not is_protected_path(Path(dirpath) / d)
@@ -160,9 +171,16 @@ def discover_files_streaming(
     """Generator version of discover_files — yields one Path at a time.
     Never holds the full file list in RAM. Use for large drives."""
     skip_dirs = {
-        ".git", "__pycache__", "node_modules", ".venv", "venv",
-        ".hf_cache", ".playwright-mcp", "$Recycle.Bin",
-        "System Volume Information", "Windows",
+        ".git",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "venv",
+        ".hf_cache",
+        ".playwright-mcp",
+        "$Recycle.Bin",
+        "System Volume Information",
+        "Windows",
     }
 
     for root_path_str in paths:
@@ -181,8 +199,10 @@ def discover_files_streaming(
             # Prune skip dirs and protected subtrees in-place (defense in depth:
             # a root may pass validation while a subtree is protected)
             dirnames[:] = [
-                d for d in dirnames
-                if d not in skip_dirs and not d.startswith(".")
+                d
+                for d in dirnames
+                if d not in skip_dirs
+                and not d.startswith(".")
                 and not is_protected_path(Path(dirpath) / d)
             ]
 
@@ -227,19 +247,21 @@ def build_file_records(
     for fp in file_paths:
         try:
             stat = fp.stat()
-            records.append(FileRecord(
-                path=str(fp),
-                filename=fp.name,
-                extension=fp.suffix.lower(),
-                size_bytes=stat.st_size,
-                created_at=datetime.fromtimestamp(stat.st_ctime, tz=timezone.utc).isoformat(),
-                modified_at=datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-                accessed_at=datetime.fromtimestamp(stat.st_atime, tz=timezone.utc).isoformat(),
-                drive=fp.drive or str(fp.parts[0]) if fp.parts else "",
-                parent_dir=str(fp.parent),
-                depth=len(fp.parts),
-                scan_id=scan_id,
-            ))
+            records.append(
+                FileRecord(
+                    path=str(fp),
+                    filename=fp.name,
+                    extension=fp.suffix.lower(),
+                    size_bytes=stat.st_size,
+                    created_at=datetime.fromtimestamp(stat.st_ctime, tz=UTC).isoformat(),
+                    modified_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
+                    accessed_at=datetime.fromtimestamp(stat.st_atime, tz=UTC).isoformat(),
+                    drive=fp.drive or str(fp.parts[0]) if fp.parts else "",
+                    parent_dir=str(fp.parent),
+                    depth=len(fp.parts),
+                    scan_id=scan_id,
+                )
+            )
         except (OSError, PermissionError) as e:
             logger.debug("Cannot stat {}: {}", fp, e)
 
@@ -256,9 +278,13 @@ class IntelligenceScanOrchestrator:
     deduplication, and recommendation generation.
     """
 
-    def __init__(self, config: ScanConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ScanConfig | None = None,
+        db: IntelligenceDB | None = None,
+    ) -> None:
         self.config = config or ScanConfig()
-        self.db = IntelligenceDB(DB_PATH)
+        self.db = db or IntelligenceDB(DB_PATH)
         self.sampler = ContentSampler()
         self.scorer = IntelligenceScorer()
         self.mapper = RelationshipMapper()
@@ -286,6 +312,7 @@ class IntelligenceScanOrchestrator:
         self,
         paths: list[str],
         profile: str = "INTELLIGENCE",
+        scan_id: int | None = None,
     ) -> int:
         """Execute a full intelligence scan.
 
@@ -298,26 +325,42 @@ class IntelligenceScanOrchestrator:
         """
         start_time = time.time()
         logger.info("Starting intelligence scan: paths={}, profile={}", paths, profile)
+        if profile not in SCAN_PROFILES:
+            raise ValueError(f"unknown scan profile: {profile}")
+        if not paths:
+            raise ValueError("at least one scan path is required")
+        for path in paths:
+            ok, reason = validate_scan_path(path)
+            if not ok:
+                raise ValueError(f"scan path rejected: {reason}")
 
-        # Initialize database
+        # Initialize database and reuse the durable ID allocated by the API.
         self.db.initialize()
-
-        # Create scan record
-        scan_id = self.db.create_scan(
-            drives=paths,
-            profile=profile,
-        )
+        if scan_id is None:
+            scan_id = self.db.create_scan(drives=paths, profile=profile)
+        elif self.db.get_scan(scan_id) is None:
+            raise ValueError(f"preallocated scan id does not exist: {scan_id}")
         self.progress.scan_id = scan_id
         self._update_progress(phase="discovering")
+        stage_warnings: dict[str, int] = {
+            "library_extraction": 0,
+            "classification": 0,
+            "project_advisor": 0,
+            "worker_sync": 0,
+        }
+        self.db.record_stage(scan_id, "preflight", "running")
 
         try:
             # Pre-flight checks
             db_ok, free_gb = check_disk_space(self.db.db_path)
             if not db_ok:
                 logger.error("Insufficient disk space for scan DB — aborting")
-                self.db.complete_scan(scan_id, 0, 0, 0, 0, 0.0)
+                self.db.record_stage(scan_id, "discovery", "passed", "no files discovered")
+                self.db.complete_scan(scan_id, 0, 0, 0, 0, 0.0, status="completed_with_warnings")
                 return scan_id
             logger.info("Disk preflight OK: {:.1f}GB free", free_gb)
+            self.db.record_stage(scan_id, "preflight", "passed", f"{free_gb:.1f}GB free")
+            self.db.record_stage(scan_id, "discovery", "running")
 
             # Phase 1: Discovery (streaming — never holds full list in RAM)
             logger.info("Phase 1: File Discovery")
@@ -361,7 +404,7 @@ class IntelligenceScanOrchestrator:
 
                 records = build_file_records(changed, scan_id)
                 sampled = []
-                for record, sample in zip(records, samples):
+                for record, sample in zip(records, samples, strict=False):
                     if sample:
                         record.sha256 = sample.sha256
                         record.xxhash = sample.xxhash
@@ -373,33 +416,44 @@ class IntelligenceScanOrchestrator:
                         try:
                             stat = Path(record.path).stat()
                             self.db.update_file_hash(
-                                record.path, sample.sha256, sample.xxhash,
-                                stat.st_size, str(stat.st_mtime), scan_id
+                                record.path,
+                                sample.sha256,
+                                sample.xxhash,
+                                stat.st_size,
+                                str(stat.st_mtime),
+                                scan_id,
                             )
                         except OSError:
                             pass
                         # Library extraction — code files only
                         ext = Path(record.path).suffix.lower()
-                        if ext in ('.py', '.js', '.ts', '.jsx', '.tsx') and sample.content_sample:
+                        if ext in (".py", ".js", ".ts", ".jsx", ".tsx") and sample.content_sample:
                             try:
-                                extractions = extract_libraries(Path(record.path), sample.content_sample)
-                                lib_counts = self.db.store_library_batch(scan_id, extractions)
-                                if extractions.get('secrets'):
-                                    logger.warning("🔴 SENSITIVE: {} secrets in {}",
-                                        len(extractions['secrets']), record.path)
+                                extractions = extract_libraries(
+                                    Path(record.path), sample.content_sample
+                                )
+                                self.db.store_library_batch(scan_id, extractions)
+                                if extractions.get("secrets"):
+                                    logger.warning(
+                                        "🔴 SENSITIVE: {} secrets in {}",
+                                        len(extractions["secrets"]),
+                                        record.path,
+                                    )
                             except Exception as le:
-                                logger.debug("Library extract failed {}: {}", record.path, le)
+                                stage_warnings["library_extraction"] += 1
+                                logger.warning("Library extract failed {}: {}", record.path, le)
                     sampled.append(record)
 
                 ids = self.db.upsert_files_batch(sampled)
-                for rec, fid in zip(sampled, ids):
+                for rec, fid in zip(sampled, ids, strict=False):
                     rec.id = fid
                     path_to_id_partial[rec.path] = fid
                 sampled_records.extend(sampled)
                 return ids
 
             # Priority sort: scan high-value dirs first
-            PRIORITY_DIRS = ['ECHO_OMEGA_PRIME', 'SYSTEMS', 'WORKERS', 'CORE', '_CLAUDE']
+            PRIORITY_DIRS = ["ECHO_OMEGA_PRIME", "SYSTEMS", "WORKERS", "CORE", "_CLAUDE"]
+
             def _priority_key(p):
                 s = str(p)
                 for i, d in enumerate(PRIORITY_DIRS):
@@ -414,8 +468,14 @@ class IntelligenceScanOrchestrator:
                     ids = await flush_batch(batch_paths)
                     all_stored_ids.extend(ids)
                     total_size += sum(p.stat().st_size for p in batch_paths if p.exists())
-                    self._update_progress(processed_files=total_discovered, current_file=str(batch_paths[-1].name))
-                    logger.info("Batch committed: {} files processed ({} total)", len(batch_paths), total_discovered)
+                    self._update_progress(
+                        processed_files=total_discovered, current_file=str(batch_paths[-1].name)
+                    )
+                    logger.info(
+                        "Batch committed: {} files processed ({} total)",
+                        len(batch_paths),
+                        total_discovered,
+                    )
                     batch_paths = []  # release memory
 
             # Final partial batch
@@ -432,23 +492,36 @@ class IntelligenceScanOrchestrator:
                 return scan_id
 
             logger.info("Phase 2 complete: {} files stored in DB", total_discovered)
-            stored_ids = all_stored_ids
+            self.db.record_stage(scan_id, "discovery", "passed", f"{total_discovered} files")
+            library_status = "degraded" if stage_warnings["library_extraction"] else "passed"
+            self.db.record_stage(
+                scan_id,
+                "library_extraction",
+                library_status,
+                "one or more code files could not be extracted"
+                if stage_warnings["library_extraction"]
+                else "complete",
+                stage_warnings["library_extraction"],
+            )
             # Update IDs from database — returned IDs correspond 1:1 with sampled_records
             path_to_id: dict[str, int] = {}
             path_to_id = path_to_id_partial  # already built during streaming flush
 
             # Phase 2c: Library stats
             lib_stats = self.db.get_library_stats()
-            logger.info("Library totals — functions:{} patterns:{} schemas:{} endpoints:{} secrets:{}",
-                lib_stats.get('lib_functions', 0),
-                lib_stats.get('lib_patterns', 0),
-                lib_stats.get('lib_schemas', 0),
-                lib_stats.get('lib_endpoints', 0),
-                lib_stats.get('sensitive_findings', 0))
+            logger.info(
+                "Library totals — functions:{} patterns:{} schemas:{} endpoints:{} secrets:{}",
+                lib_stats.get("lib_functions", 0),
+                lib_stats.get("lib_patterns", 0),
+                lib_stats.get("lib_schemas", 0),
+                lib_stats.get("lib_endpoints", 0),
+                lib_stats.get("sensitive_findings", 0),
+            )
 
             # Phase 3: Classification
             logger.info("Phase 3: Engine Classification")
             self._update_progress(phase="classifying")
+            self.db.record_stage(scan_id, "classification", "running")
 
             all_classifications: dict[int, list[Classification]] = {}
             engine_client = EngineClient()
@@ -459,6 +532,7 @@ class IntelligenceScanOrchestrator:
 
                 # Build file samples for classification as (FileSample, file_id) tuples
                 from storage.models import FileSample
+
                 sample_tuples: list[tuple[FileSample, int]] = []
                 for rec in sampled_records:
                     if rec.content_sample or not rec.is_binary:
@@ -481,7 +555,7 @@ class IntelligenceScanOrchestrator:
                 api_calls = 0
                 cache_hits = 0
                 for batch_start in range(0, len(sample_tuples), batch_size):
-                    batch = sample_tuples[batch_start:batch_start + batch_size]
+                    batch = sample_tuples[batch_start : batch_start + batch_size]
                     results = await pipeline.classify_batch_sorted(batch, scan_id)
 
                     for result in results:
@@ -501,6 +575,23 @@ class IntelligenceScanOrchestrator:
                         ),
                     )
 
+            if not ENGINE_RUNTIME_URL and SCAN_PROFILES[profile].get("intelligence"):
+                stage_warnings["classification"] += 1
+                self.db.record_stage(
+                    scan_id,
+                    "classification",
+                    "degraded",
+                    "engine runtime is not configured; deterministic local scoring continued",
+                    1,
+                )
+            else:
+                self.db.record_stage(
+                    scan_id,
+                    "classification",
+                    "passed",
+                    f"{len(all_classifications)} files classified",
+                )
+
             # Phase 4: Intelligence Scoring
             logger.info("Phase 4: Intelligence Scoring")
             self._update_progress(phase="scoring")
@@ -518,7 +609,9 @@ class IntelligenceScanOrchestrator:
             self._update_progress(phase="mapping_relationships")
 
             relationships = self.mapper.detect_all(
-                sampled_records, all_classifications, scan_id,
+                sampled_records,
+                all_classifications,
+                scan_id,
             )
             if relationships:
                 self.db.insert_relationships_batch(relationships)
@@ -528,23 +621,32 @@ class IntelligenceScanOrchestrator:
             self._update_progress(phase="deduplicating")
 
             clusters = self.deduplicator.find_duplicates(
-                sampled_records, scores, all_classifications,
+                sampled_records,
+                scores,
+                all_classifications,
             )
             for cluster in clusters:
-                self.db.insert_duplicate_cluster(cluster)
+                self.db.insert_duplicate_cluster(cluster, scan_id=scan_id)
+            self.db.record_stage(scan_id, "deduplication", "passed", f"{len(clusters)} clusters")
 
             # Phase 7: Recommendations
             logger.info("Phase 7: Generating Recommendations")
             self._update_progress(phase="recommending")
 
             recommendations = self.recommender.generate_all(
-                sampled_records, scores, all_classifications,
-                relationships, clusters, scan_id,
+                sampled_records,
+                scores,
+                all_classifications,
+                relationships,
+                clusters,
+                scan_id,
             )
             if recommendations:
                 self.db.insert_recommendations_batch(recommendations)
+            self.db.record_stage(
+                scan_id, "recommendations", "passed", f"{len(recommendations)} recommendations"
+            )
 
-            
             # Stage 10: Project Advisor — Project & Program Intelligence
             logger.info("Stage 10: Project Advisor — Generating Project & Program Proposals")
             self._update_progress(phase="advising")
@@ -554,14 +656,18 @@ class IntelligenceScanOrchestrator:
                 for rec in sampled_records:
                     if rec.extension in code_exts and rec.size_bytes < 200_000:
                         try:
-                            advisor_contents[rec.path] = Path(rec.path).read_text(encoding="utf-8", errors="ignore")
+                            advisor_contents[rec.path] = Path(rec.path).read_text(
+                                encoding="utf-8", errors="ignore"
+                            )
                         except Exception:
                             pass
                 advisor = ProjectAdvisor()
                 proposals = advisor.analyze(
-                    files=sampled_records, scores=scores,
+                    files=sampled_records,
+                    scores=scores,
                     classifications=all_classifications,
-                    scan_id=scan_id, file_contents=advisor_contents,
+                    scan_id=scan_id,
+                    file_contents=advisor_contents,
                 )
                 if proposals:
                     # Use the SAME db the dashboard/API reads (honours
@@ -573,6 +679,7 @@ class IntelligenceScanOrchestrator:
                         kf_payload = format_proposals_for_knowledge_forge(proposals, scan_id, paths)
                         try:
                             import aiohttp as _ah
+
                             async with _ah.ClientSession() as _s:
                                 async with _s.post(
                                     f"{KNOWLEDGE_FORGE_URL}/ingest",
@@ -584,9 +691,17 @@ class IntelligenceScanOrchestrator:
                         except Exception as _kfe:
                             logger.warning("Stage 10: KF ingest failed: {}", _kfe)
                     else:
-                        logger.info("Stage 10: Knowledge Forge sync disabled — no endpoint/key configured")
+                        logger.info(
+                            "Stage 10: Knowledge Forge sync disabled — no endpoint/key configured"
+                        )
             except Exception as _ae:
+                stage_warnings["project_advisor"] += 1
+                self.db.record_stage(scan_id, "project_advisor", "degraded", str(_ae), 1)
                 logger.warning("Stage 10 failed (non-fatal): {}", _ae)
+            else:
+                self.db.record_stage(
+                    scan_id, "project_advisor", "passed", "proposal analysis complete"
+                )
 
             # Phase 9: Domain Statistics
             logger.info("Phase 8: Computing Domain Statistics")
@@ -619,14 +734,29 @@ class IntelligenceScanOrchestrator:
             # Complete scan
             elapsed = time.time() - start_time
             skipped = len(sampled_records) - len(all_classifications)
+            warning_total = sum(stage_warnings.values())
+            completion_status = "completed_with_warnings" if warning_total else "completed"
             self.db.complete_scan(
-                scan_id, len(sampled_records), total_size,
-                len(all_classifications), skipped, elapsed,
+                scan_id,
+                len(sampled_records),
+                total_size,
+                len(all_classifications),
+                skipped,
+                elapsed,
+                status=completion_status,
+            )
+            self.db.record_stage(
+                scan_id,
+                "finalization",
+                "degraded" if warning_total else "passed",
+                f"terminal_status={completion_status}",
+                warning_total,
             )
 
             self._update_progress(
-                phase="completed",
+                phase=completion_status,
                 elapsed_seconds=elapsed,
+                errors=warning_total,
             )
 
             # Log summary
@@ -649,15 +779,24 @@ class IntelligenceScanOrchestrator:
                 if pushed:
                     logger.info("Phase 10: Worker push complete ✅")
                 else:
+                    stage_warnings["worker_sync"] += 1
+                    self.db.record_stage(scan_id, "worker_sync", "degraded", "push failed", 1)
                     logger.warning("Phase 10: Worker push failed — results remain in local DB")
             else:
+                self.db.record_stage(scan_id, "worker_sync", "skipped", "disabled")
                 logger.debug("Worker sync disabled (WORKER_SYNC_ENABLED=False)")
 
             return scan_id
 
+        except asyncio.CancelledError:
+            self.db.cancel_scan(scan_id)
+            self.db.record_stage(scan_id, "finalization", "cancelled", "operator cancellation")
+            self._update_progress(phase="cancelled")
+            raise
         except Exception as e:
             logger.error("Scan {} failed: {}", scan_id, e)
             self.db.fail_scan(scan_id)
+            self.db.record_stage(scan_id, "finalization", "failed", str(e))
             raise
 
     async def upload_to_cloud(self, scan_id: int) -> bool:
@@ -679,7 +818,9 @@ class IntelligenceScanOrchestrator:
         # Resolve API key from environment only — never hardcoded.
         api_key = os.environ.get("DRIVESCAN_ENGINE_API_KEY") or os.environ.get("ECHO_API_KEY", "")
         if not api_key:
-            logger.info("Worker sync disabled — no API key configured (set DRIVESCAN_ENGINE_API_KEY)")
+            logger.info(
+                "Worker sync disabled — no API key configured (set DRIVESCAN_ENGINE_API_KEY)"
+            )
             return False
 
         headers = {
@@ -701,8 +842,12 @@ class IntelligenceScanOrchestrator:
 
         logger.info(
             "Worker push: scan={} files={} scores={} recs={} domains={} dupes={}",
-            scan_id, len(files), len(scores_raw), len(recs),
-            len(domain_stats), len(dup_clusters),
+            scan_id,
+            len(files),
+            len(scores_raw),
+            len(recs),
+            len(domain_stats),
+            len(dup_clusters),
         )
 
         # ── Map files → FileInput ──────────────────────────────────────────
@@ -712,96 +857,134 @@ class IntelligenceScanOrchestrator:
         for idx, f in enumerate(files):
             fid = f.id if hasattr(f, "id") else (f.get("id") if isinstance(f, dict) else idx)
             file_index_map[fid] = idx
-            rec = f if isinstance(f, dict) else f.model_dump() if hasattr(f, "model_dump") else vars(f)
-            file_inputs.append({
-                "path":             rec.get("path", ""),
-                "filename":         rec.get("filename", ""),
-                "extension":        rec.get("extension", ""),
-                "size_bytes":       rec.get("size_bytes", 0),
-                "modified_at":      rec.get("modified_at"),
-                "created_at":       rec.get("created_at"),
-                "content_hash":     rec.get("sha256") or rec.get("xxhash") or "",
-                "domain":           rec.get("domain", "UNKNOWN"),
-                "domain_label":     rec.get("domain_label", ""),
-                "domain_confidence": rec.get("domain_confidence", 0.0),
-            })
+            rec = (
+                f
+                if isinstance(f, dict)
+                else f.model_dump()
+                if hasattr(f, "model_dump")
+                else vars(f)
+            )
+            file_inputs.append(
+                {
+                    "path": rec.get("path", ""),
+                    "filename": rec.get("filename", ""),
+                    "extension": rec.get("extension", ""),
+                    "size_bytes": rec.get("size_bytes", 0),
+                    "modified_at": rec.get("modified_at"),
+                    "created_at": rec.get("created_at"),
+                    "content_hash": rec.get("sha256") or rec.get("xxhash") or "",
+                    "domain": rec.get("domain", "UNKNOWN"),
+                    "domain_label": rec.get("domain_label", ""),
+                    "domain_confidence": rec.get("domain_confidence", 0.0),
+                }
+            )
 
         # ── Map scores → ScoreInput ────────────────────────────────────────
         score_inputs = []
         for s in scores_raw:
-            sd = s if isinstance(s, dict) else (s.model_dump() if hasattr(s, "model_dump") else vars(s))
+            sd = (
+                s
+                if isinstance(s, dict)
+                else (s.model_dump() if hasattr(s, "model_dump") else vars(s))
+            )
             fid = sd.get("file_id", 0)
-            score_inputs.append({
-                "file_index":        file_index_map.get(fid, 0),
-                "overall_score":     sd.get("overall_score", 0.0),
-                "quality_score":     sd.get("quality_score", 0.0),
-                "importance_score":  sd.get("importance_score", 0.0),
-                "sensitivity_score": sd.get("sensitivity_score", 0.0),
-                "staleness_score":   sd.get("staleness_score", 0.0),
-                "uniqueness_score":  sd.get("uniqueness_score", 0.0),
-                "risk_score":        sd.get("risk_score", 0.0),
-                "scored_at":         sd.get("scored_at", _now_iso()),
-            })
+            score_inputs.append(
+                {
+                    "file_index": file_index_map.get(fid, 0),
+                    "overall_score": sd.get("overall_score", 0.0),
+                    "quality_score": sd.get("quality_score", 0.0),
+                    "importance_score": sd.get("importance_score", 0.0),
+                    "sensitivity_score": sd.get("sensitivity_score", 0.0),
+                    "staleness_score": sd.get("staleness_score", 0.0),
+                    "uniqueness_score": sd.get("uniqueness_score", 0.0),
+                    "risk_score": sd.get("risk_score", 0.0),
+                    "scored_at": sd.get("scored_at", _now_iso()),
+                }
+            )
 
         # ── Map domain_stats → DomainInput ────────────────────────────────
         domain_inputs = []
         for d in domain_stats:
-            dd = d if isinstance(d, dict) else (d.model_dump() if hasattr(d, "model_dump") else vars(d))
-            domain_inputs.append({
-                "domain":           dd.get("domain", "UNKNOWN"),
-                "domain_label":     dd.get("domain_label", ""),
-                "file_count":       dd.get("file_count", 0),
-                "total_size_bytes": dd.get("total_size_bytes", 0),
-                "avg_score":        dd.get("avg_score", 0.0),
-            })
+            dd = (
+                d
+                if isinstance(d, dict)
+                else (d.model_dump() if hasattr(d, "model_dump") else vars(d))
+            )
+            domain_inputs.append(
+                {
+                    "domain": dd.get("domain", "UNKNOWN"),
+                    "domain_label": dd.get("domain_label", ""),
+                    "file_count": dd.get("file_count", 0),
+                    "total_size_bytes": dd.get("total_size_bytes", 0),
+                    "avg_score": dd.get("avg_score", 0.0),
+                }
+            )
 
         # ── Map duplicate clusters → DuplicateInput ───────────────────────
         dupe_inputs = []
         for c in dup_clusters:
-            cd = c if isinstance(c, dict) else (c.model_dump() if hasattr(c, "model_dump") else vars(c))
-            dupe_inputs.append({
-                "cluster_hash": cd.get("cluster_hash", ""),
-                "file_count":   cd.get("file_count", 0),
-                "wasted_bytes": cd.get("total_wasted_bytes", 0),
-                "file_paths":   cd.get("file_paths", []),
-            })
+            cd = (
+                c
+                if isinstance(c, dict)
+                else (c.model_dump() if hasattr(c, "model_dump") else vars(c))
+            )
+            dupe_inputs.append(
+                {
+                    "cluster_hash": cd.get("cluster_hash", ""),
+                    "file_count": cd.get("file_count", 0),
+                    "wasted_bytes": cd.get("total_wasted_bytes", 0),
+                    "file_paths": cd.get("file_paths", []),
+                }
+            )
 
         # ── Map recommendations → RecommendationInput ─────────────────────
         rec_inputs = []
         for r in recs:
-            rd = r if isinstance(r, dict) else (r.model_dump() if hasattr(r, "model_dump") else vars(r))
-            rec_inputs.append({
-                "title":            rd.get("title", ""),
-                "description":      rd.get("description", ""),
-                "category":         rd.get("category", "general"),
-                "severity":         rd.get("severity", "medium"),
-                "affected_files":   rd.get("affected_files", []),
-                "estimated_impact": rd.get("estimated_impact", ""),
-            })
+            rd = (
+                r
+                if isinstance(r, dict)
+                else (r.model_dump() if hasattr(r, "model_dump") else vars(r))
+            )
+            rec_inputs.append(
+                {
+                    "title": rd.get("title", ""),
+                    "description": rd.get("description", ""),
+                    "category": rd.get("category", "general"),
+                    "severity": rd.get("severity", "medium"),
+                    "affected_files": rd.get("affected_files", []),
+                    "estimated_impact": rd.get("estimated_impact", ""),
+                }
+            )
 
         # ── Build ScanInput payload ────────────────────────────────────────
-        sd = scan if isinstance(scan, dict) else (scan.model_dump() if hasattr(scan, "model_dump") else vars(scan))
+        sd = (
+            scan
+            if isinstance(scan, dict)
+            else (scan.model_dump() if hasattr(scan, "model_dump") else vars(scan))
+        )
         BATCH = WORKER_PUSH_BATCH_SIZE  # default 500
 
         # Send first batch with full scan metadata + first BATCH files
-        first_files  = file_inputs[:BATCH]
+        first_files = file_inputs[:BATCH]
         first_scores = [s for s in score_inputs if s["file_index"] < BATCH]
 
         payload: dict = {
-            "node":              os.environ.get("COMPUTERNAME", "ALPHA"),
-            "started_at":        sd.get("started_at", _now_iso()),
-            "completed_at":      sd.get("completed_at", _now_iso()),
-            "profile":           sd.get("profile", "INTELLIGENCE"),
-            "paths":             json.loads(sd.get("drives", "[]")) if isinstance(sd.get("drives"), str) else sd.get("drives", []),
-            "total_files":       sd.get("total_files", len(files)),
-            "total_size_bytes":  sd.get("total_size_bytes", 0),
-            "duration_seconds":  sd.get("duration_seconds", 0.0),
-            "status":            "complete",
-            "files":             first_files,
-            "scores":            first_scores,
-            "domains":           domain_inputs,
-            "duplicates":        dupe_inputs,
-            "recommendations":   rec_inputs,
+            "node": os.environ.get("COMPUTERNAME", "ALPHA"),
+            "started_at": sd.get("started_at", _now_iso()),
+            "completed_at": sd.get("completed_at", _now_iso()),
+            "profile": sd.get("profile", "INTELLIGENCE"),
+            "paths": json.loads(sd.get("drives", "[]"))
+            if isinstance(sd.get("drives"), str)
+            else sd.get("drives", []),
+            "total_files": sd.get("total_files", len(files)),
+            "total_size_bytes": sd.get("total_size_bytes", 0),
+            "duration_seconds": sd.get("duration_seconds", 0.0),
+            "status": "complete",
+            "files": first_files,
+            "scores": first_scores,
+            "domains": domain_inputs,
+            "duplicates": dupe_inputs,
+            "recommendations": rec_inputs,
         }
 
         try:
@@ -814,17 +997,23 @@ class IntelligenceScanOrchestrator:
                     timeout=aiohttp.ClientTimeout(total=120),
                 ) as resp:
                     if resp.status not in (200, 201):
-                        logger.error("Worker /ingest/scan failed: {} {}", resp.status, await resp.text())
+                        logger.error(
+                            "Worker /ingest/scan failed: {} {}", resp.status, await resp.text()
+                        )
                         return False
                     result = await resp.json()
                     worker_scan_id = result.get("scan_id") or result.get("id")
-                    logger.info("Worker scan created: id={} counts={}", worker_scan_id, result.get("counts", {}))
+                    logger.info(
+                        "Worker scan created: id={} counts={}",
+                        worker_scan_id,
+                        result.get("counts", {}),
+                    )
 
                 # Push remaining file batches via /ingest/files
                 remaining = file_inputs[BATCH:]
                 batch_num = 1
                 for i in range(0, len(remaining), BATCH):
-                    chunk_files = remaining[i:i + BATCH]
+                    chunk_files = remaining[i : i + BATCH]
                     offset = BATCH + i
                     chunk_scores = [
                         {**s, "file_index": s["file_index"] - offset}
@@ -833,8 +1022,8 @@ class IntelligenceScanOrchestrator:
                     ]
                     batch_payload = {
                         "scan_id": worker_scan_id,
-                        "files":   chunk_files,
-                        "scores":  chunk_scores,
+                        "files": chunk_files,
+                        "scores": chunk_scores,
                     }
                     async with session.post(
                         f"{DRIVE_INTELLIGENCE_URL}/ingest/files",
@@ -851,7 +1040,9 @@ class IntelligenceScanOrchestrator:
                 total_batches = 1 + max(0, (len(file_inputs) - BATCH + BATCH - 1) // BATCH)
                 logger.info(
                     "Worker push complete: scan_id={} {} files in {} batches",
-                    worker_scan_id, len(file_inputs), total_batches,
+                    worker_scan_id,
+                    len(file_inputs),
+                    total_batches,
                 )
                 return True
 

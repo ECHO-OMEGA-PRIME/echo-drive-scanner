@@ -1,4 +1,4 @@
-"""Intelligent Drive Scanner v2.0 — Pydantic Data Models.
+"""Intelligent Drive Scanner v2.0 â€” Pydantic Data Models.
 
 All data models for file records, classifications, scores, relationships,
 duplicate clusters, recommendations, scan results, and domain statistics.
@@ -7,24 +7,22 @@ Strict validation, typed fields, ISO-8601 timestamps.
 
 from __future__ import annotations
 
-from datetime import datetime
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
 
+# â”€â”€ Enums â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-# ── Enums ────────────────────────────────────────────────────────────────────
 
-
-class ScanStatus(str, Enum):
+class ScanStatus(StrEnum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
 
 
-class ConfidenceLevel(str, Enum):
+class ConfidenceLevel(StrEnum):
     DEFENSIBLE = "DEFENSIBLE"
     AGGRESSIVE = "AGGRESSIVE"
     DISCLOSURE = "DISCLOSURE"
@@ -32,13 +30,13 @@ class ConfidenceLevel(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class QueryMode(str, Enum):
+class QueryMode(StrEnum):
     FAST = "FAST"
     DEFENSE = "DEFENSE"
     MEMO = "MEMO"
 
 
-class RelationshipType(str, Enum):
+class RelationshipType(StrEnum):
     DUPLICATES = "duplicates"
     NEAR_DUPLICATES = "near_duplicates"
     REFERENCES = "references"
@@ -51,7 +49,7 @@ class RelationshipType(str, Enum):
     CO_CLASSIFIED = "co_classified"
 
 
-class RecommendationCategory(str, Enum):
+class RecommendationCategory(StrEnum):
     ARCHIVE = "archive"
     DELETE = "delete"
     SECURE = "secure"
@@ -64,7 +62,7 @@ class RecommendationCategory(str, Enum):
     UPDATE = "update"
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     CRITICAL = "critical"
     HIGH = "high"
     MEDIUM = "medium"
@@ -72,7 +70,7 @@ class Severity(str, Enum):
     INFO = "info"
 
 
-class KeeperStrategy(str, Enum):
+class KeeperStrategy(StrEnum):
     KEEP_NEWEST = "keep_newest"
     KEEP_LARGEST = "keep_largest"
     KEEP_SHALLOWEST = "keep_shallowest"
@@ -87,7 +85,7 @@ class ClassificationTier(int, Enum):
     TIER3_DEEP = 3
 
 
-# ── File Models ──────────────────────────────────────────────────────────────
+# â”€â”€ File Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class FileSample(BaseModel):
@@ -134,7 +132,7 @@ class FileRecord(BaseModel):
     last_modified_scan_id: int | None = None
 
 
-# ── Classification Models ────────────────────────────────────────────────────
+# â”€â”€ Classification Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class Classification(BaseModel):
@@ -207,7 +205,7 @@ class ClassificationResult(BaseModel):
     total_ms: int = 0
 
 
-# ── Scoring Models ───────────────────────────────────────────────────────────
+# â”€â”€ Scoring Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class IntelligenceScore(BaseModel):
@@ -231,7 +229,7 @@ class IntelligenceScore(BaseModel):
     score_version: str = "2.0"
 
 
-# ── Relationship Models ──────────────────────────────────────────────────────
+# â”€â”€ Relationship Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class Relationship(BaseModel):
@@ -247,7 +245,7 @@ class Relationship(BaseModel):
     scan_id: int = 0
 
 
-# ── Deduplication Models ─────────────────────────────────────────────────────
+# â”€â”€ Deduplication Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class DuplicateCluster(BaseModel):
@@ -273,7 +271,7 @@ class DuplicateMember(BaseModel):
     size_bytes: int = 0
 
 
-# ── Recommendation Models ────────────────────────────────────────────────────
+# â”€â”€ Recommendation Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class Recommendation(BaseModel):
@@ -295,7 +293,7 @@ class Recommendation(BaseModel):
     created_at: str = ""
 
 
-# ── Scan & Stats Models ─────────────────────────────────────────────────────
+# â”€â”€ Scan & Stats Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class ScanRecord(BaseModel):
@@ -349,7 +347,7 @@ class ScanSummary(BaseModel):
     sensitive_count: int = 0
 
 
-# ── Dashboard / API Models ───────────────────────────────────────────────────
+# â”€â”€ Dashboard / API Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class FileDetail(BaseModel):

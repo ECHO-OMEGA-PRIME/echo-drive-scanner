@@ -332,3 +332,56 @@ MIT
 
 *Built on Alpha node — i7-6700K, RTX 4060, 32GB DDR4, 16 drives.*
 *Echo Omega Prime — Midland, TX — 2026*
+
+---
+
+## Governed service contract — v2.1
+
+The dashboard/API is now a governed internal service rather than an unrestricted filesystem endpoint.
+
+### Security boundary
+
+- Production access is restricted to exact trusted source IPs or an optional constant-time service token.
+- HTTP bodies are size-bounded and every response carries a request ID.
+- Scan and file-action inputs reject unknown fields.
+- File and proposal responses use opaque path identities and redacted display paths; content samples are not returned by the public API.
+- `personal`, private-memory, credential, and vault roots can be blocked through `DRIVESCAN_PROTECTED_PATHS`; scan roots can be constrained through `DRIVESCAN_ALLOWLIST`.
+- File actions remain disabled unless `DRIVESCAN_ALLOW_FILE_ACTIONS=1` is deliberately set. No delete API is exposed.
+- Proposal generation is read-only. Queueing work is owned by the caller's governed capability broker; this service does not hold a sovereign SDK key.
+
+### Truthful scan lifecycle
+
+A scan start returns a durable `scan_id`, run-specific status/stage URLs, and an accepted timestamp. The service records per-stage results and distinguishes:
+
+- `completed`
+- `completed_with_warnings`
+- `degraded`
+- `failed`
+- `cancelled`
+
+File and score observations are immutable per scan, preventing later scans from rewriting historical evidence. Duplicate clusters are scan-owned, and read endpoints resolve one explicit scan instead of mixing current and historical results.
+
+### Storage summary
+
+`GET /api/storage/summary` reports filesystem capacity and utilization. Physical-device or SMART health is deliberately returned as `unknown` because this service does not collect that telemetry. The UI must not translate a completed file scan into a healthy-drive claim.
+
+### Versioned SDK contracts
+
+Strict input/output schemas are stored in:
+
+```text
+contracts/sdk_capability_schemas.json
+```
+
+The manifest covers the eight existing `echo.drivescan.*` capabilities and the new storage-summary contract. Central registry deployment must use this manifest; unknown request properties are denied.
+
+### A+ quality gate
+
+Install the development dependencies and run the complete deterministic gate:
+
+```powershell
+pip install -r requirements-dev.txt
+python quality_gate.py
+```
+
+The gate stops on the first failure and verifies compilation, dependency integrity, Ruff, critical-surface mypy, the full test suite, an enforced 85% security-critical branch-coverage floor, a real staged scan/API smoke test, and dependency vulnerability audit. Hash-complete evidence is written under `artifacts/quality/`.

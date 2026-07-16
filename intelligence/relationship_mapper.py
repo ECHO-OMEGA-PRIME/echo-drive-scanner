@@ -1,4 +1,4 @@
-"""Intelligent Drive Scanner v2.0 — Cross-File Relationship Mapping.
+"""Intelligent Drive Scanner v2.0 â€” Cross-File Relationship Mapping.
 
 Detects how files relate to each other by analyzing shared content, naming
 patterns, directory structures, code dependencies, and classification overlaps.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,20 +23,20 @@ from storage.models import (
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
-# ── Version Pattern Detection ────────────────────────────────────────────────
+# â”€â”€ Version Pattern Detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 VERSION_PATTERNS = [
     re.compile(r"^(.+?)[-_]v(\d+(?:\.\d+)*)(\..+)$", re.IGNORECASE),
-    re.compile(r"^(.+?)[-_](\d{8})(\..+)$"),              # date-based
+    re.compile(r"^(.+?)[-_](\d{8})(\..+)$"),  # date-based
     re.compile(r"^(.+?)[-_](?:copy|backup|old|bak)(\..+)$", re.IGNORECASE),
-    re.compile(r"^(.+?)\s*\((\d+)\)(\..+)$"),             # file (1).txt
+    re.compile(r"^(.+?)\s*\((\d+)\)(\..+)$"),  # file (1).txt
     re.compile(r"^(.+?)[-_]rev(\d+)(\..+)$", re.IGNORECASE),
 ]
 
-# ── Code Import Patterns ────────────────────────────────────────────────────
+# â”€â”€ Code Import Patterns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 IMPORT_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     ".py": [
@@ -114,7 +114,7 @@ class RelationshipMapper:
 
         Args:
             files: All file records from this scan.
-            classifications: Map of file_id → list of classifications.
+            classifications: Map of file_id â†’ list of classifications.
             scan_id: Current scan ID.
 
         Returns:
@@ -180,7 +180,9 @@ class RelationshipMapper:
         return p.stem.lower()
 
     def _detect_hash_duplicates(
-        self, by_hash: dict[str, list[FileRecord]], scan_id: int,
+        self,
+        by_hash: dict[str, list[FileRecord]],
+        scan_id: int,
     ) -> None:
         """Detect exact duplicates via SHA-256 match."""
         for sha, group in by_hash.items():
@@ -202,20 +204,20 @@ class RelationshipMapper:
                 self.stats["duplicates"] += 1
 
     def _detect_versions(
-        self, by_name_stem: dict[str, list[FileRecord]], scan_id: int,
+        self,
+        by_name_stem: dict[str, list[FileRecord]],
+        scan_id: int,
     ) -> None:
         """Detect versioned files from naming patterns."""
-        for stem, group in by_name_stem.items():
+        for _stem, group in by_name_stem.items():
             if len(group) < 2:
                 continue
 
             # Check if names actually show version pattern differences
-            seen_versioned = False
             for pattern in VERSION_PATTERNS:
                 matches = [(f, pattern.match(f.filename)) for f in group]
                 versioned = [(f, m) for f, m in matches if m is not None]
                 if len(versioned) >= 2:
-                    seen_versioned = True
                     sorted_files = sorted(versioned, key=lambda x: x[0].modified_at or "")
                     for i in range(len(sorted_files) - 1):
                         older = sorted_files[i][0]
@@ -225,7 +227,7 @@ class RelationshipMapper:
                             target_file_id=newer.id or 0,
                             relationship_type=RelationshipType.VERSIONED.value,
                             confidence=0.85,
-                            evidence=f"Version pattern: {older.filename} → {newer.filename}",
+                            evidence=f"Version pattern: {older.filename} â†’ {newer.filename}",
                             detected_at=_now_iso(),
                             scan_id=scan_id,
                         )
@@ -324,7 +326,7 @@ class RelationshipMapper:
         min_shared_topics: int = 3,
     ) -> None:
         """Detect files co-classified by the same engines on the same topics."""
-        # Build topic→file index
+        # Build topicâ†’file index
         topic_files: dict[str, list[int]] = defaultdict(list)
         for file_id, clss in classifications.items():
             for cls in clss:
@@ -376,7 +378,7 @@ class RelationshipMapper:
             key = f"{primary_domain}:{stem}"
             domain_stem_groups[key].append(f)
 
-        for key, group in domain_stem_groups.items():
+        for _key, group in domain_stem_groups.items():
             if len(group) < 2:
                 continue
 

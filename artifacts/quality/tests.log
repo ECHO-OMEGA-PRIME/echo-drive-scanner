@@ -1,0 +1,9 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m pytest -q
+RETURN_CODE: 0
+
+STDOUT:
+........................................................................ [ 83%]
+..............                                                           [100%]
+86 passed in 2.25s
+
+STDERR:

@@ -1,0 +1,156 @@
+{
+  "gates": [
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "compileall",
+        "-q",
+        "config.py",
+        "scanner.py",
+        "dashboard",
+        "intelligence",
+        "storage"
+      ],
+      "completed_at": "2026-07-16T07:13:01.541744+00:00",
+      "duration_seconds": 0.109,
+      "log": "artifacts\\quality\\compile.log",
+      "log_sha256": "fac6e4ca7287a0c0f8476133c1f67adf208037a7ac2cd303bc65fb3661b44669",
+      "name": "compile",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:01.432383+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pip",
+        "check"
+      ],
+      "completed_at": "2026-07-16T07:13:02.085026+00:00",
+      "duration_seconds": 0.542,
+      "log": "artifacts\\quality\\dependency_integrity.log",
+      "log_sha256": "856c61fb5b09b04b0319a05af05b72587b97f45b560022c2f9bae4bcc11c099a",
+      "name": "dependency_integrity",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:01.542763+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        ".",
+        "--exclude",
+        ".venv"
+      ],
+      "completed_at": "2026-07-16T07:13:02.190918+00:00",
+      "duration_seconds": 0.105,
+      "log": "artifacts\\quality\\lint.log",
+      "log_sha256": "2b4ee0a37d3f3677704a969b0a62bdf804338b3b83b0cf63794b7def9b5fd990",
+      "name": "lint",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:02.085901+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "mypy",
+        "--follow-imports=skip",
+        "dashboard/api_models.py",
+        "dashboard/security.py",
+        "dashboard/server.py",
+        "intelligence/function_library.py"
+      ],
+      "completed_at": "2026-07-16T07:13:02.423894+00:00",
+      "duration_seconds": 0.232,
+      "log": "artifacts\\quality\\critical_types.log",
+      "log_sha256": "7822002f3b8ebc35d52b0863734bd634e666c24aa23fd5b494db1f929a8e59f6",
+      "name": "critical_types",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:02.191971+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "completed_at": "2026-07-16T07:13:05.405861+00:00",
+      "duration_seconds": 2.981,
+      "log": "artifacts\\quality\\tests.log",
+      "log_sha256": "1a03f7d4362ce40f42cd18b44302d5cf90afcfbad35d62230ebfb95653e03097",
+      "name": "tests",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:02.424821+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/test_hardening.py",
+        "tests/test_a_plus_hardening.py",
+        "--cov=dashboard.api_models",
+        "--cov=dashboard.security",
+        "--cov=config",
+        "--cov-report=term-missing",
+        "--cov-report=json:artifacts/critical-coverage.json",
+        "-q"
+      ],
+      "completed_at": "2026-07-16T07:13:09.775053+00:00",
+      "duration_seconds": 4.368,
+      "log": "artifacts\\quality\\critical_coverage.log",
+      "log_sha256": "19d3824b04c157b178970a23006210a7729ed1e40dcde9bf3b59046ec6d47dd9",
+      "name": "critical_coverage",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:05.406945+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "smoke_live.py"
+      ],
+      "completed_at": "2026-07-16T07:13:12.345962+00:00",
+      "duration_seconds": 2.57,
+      "log": "artifacts\\quality\\live_smoke.log",
+      "log_sha256": "6c4291831ed813397d86759aec95350bbd84b8f437cd5d04ae4b985db2bebc16",
+      "name": "live_smoke",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:09.775975+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pip_audit",
+        "-r",
+        "requirements.txt",
+        "--progress-spinner",
+        "off"
+      ],
+      "completed_at": "2026-07-16T07:13:24.489198+00:00",
+      "duration_seconds": 12.142,
+      "log": "artifacts\\quality\\dependency_audit.log",
+      "log_sha256": "389546aabff3ec9204003a6edf3f9e31025696a7d1e4f298876c03a1bca4701e",
+      "name": "dependency_audit",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T07:13:12.347590+00:00"
+    }
+  ],
+  "generated_at": "2026-07-16T07:13:24.490244+00:00",
+  "report_version": "1.0",
+  "repository": "C:\\Users\\bobmc\\echo-drive-scanner",
+  "verdict": "PASS"
+}

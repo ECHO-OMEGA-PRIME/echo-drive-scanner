@@ -10,20 +10,19 @@ from __future__ import annotations
 
 import ast
 import json
+
+# ─── Config ──────────────────────────────────────────────────────────────────
+# Endpoints come from env; empty means "not configured" → pushes are skipped.
+import os
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 from loguru import logger
 from pydantic import BaseModel, Field
-
-# ─── Config ──────────────────────────────────────────────────────────────────
-# Endpoints come from env; empty means "not configured" → pushes are skipped.
-
-import os
 
 SHARED_BRAIN_URL = os.environ.get("DRIVESCAN_SHARED_BRAIN_URL", "")
 KNOWLEDGE_FORGE_URL = os.environ.get("DRIVESCAN_KNOWLEDGE_FORGE_URL", "")
@@ -40,6 +39,7 @@ DOC_EXTENSIONS = {".md", ".txt", ".rst", ".adoc"}
 
 
 # ─── Models ──────────────────────────────────────────────────────────────────
+
 
 class ExtractedFunction(BaseModel):
     name: str
@@ -121,13 +121,16 @@ class AssimilationResult(BaseModel):
 
 # ─── Assimilator ─────────────────────────────────────────────────────────────
 
+
 class Assimilator:
     """Extract templates and patterns from scanned files."""
 
     def __init__(self, db: Any) -> None:
         self.db = db
 
-    async def assimilate(self, scan_id: int, max_files: int = MAX_FILES_PER_RUN) -> AssimilationResult:
+    async def assimilate(
+        self, scan_id: int, max_files: int = MAX_FILES_PER_RUN
+    ) -> AssimilationResult:
         """Run full assimilation pipeline on scan results."""
         result = AssimilationResult()
 
@@ -183,7 +186,9 @@ class Assimilator:
         lines = content.split("\n")
         total = len(lines)
         blank = sum(1 for line in lines if not line.strip())
-        comments = sum(1 for line in lines if line.strip().startswith("#") or line.strip().startswith("//"))
+        comments = sum(
+            1 for line in lines if line.strip().startswith("#") or line.strip().startswith("//")
+        )
 
         analysis = CodeAnalysis(
             path=path,
@@ -236,15 +241,17 @@ class Assimilator:
 
                 docstring = ast.get_docstring(node) or ""
 
-                analysis.functions.append(ExtractedFunction(
-                    name=node.name,
-                    args=args,
-                    returns=returns,
-                    decorators=decorators,
-                    docstring=docstring[:200],
-                    line_number=node.lineno,
-                    is_async=isinstance(node, ast.AsyncFunctionDef),
-                ))
+                analysis.functions.append(
+                    ExtractedFunction(
+                        name=node.name,
+                        args=args,
+                        returns=returns,
+                        decorators=decorators,
+                        docstring=docstring[:200],
+                        line_number=node.lineno,
+                        is_async=isinstance(node, ast.AsyncFunctionDef),
+                    )
+                )
 
             elif isinstance(node, ast.ClassDef):
                 bases = []
@@ -255,17 +262,20 @@ class Assimilator:
                         pass
 
                 methods = [
-                    n.name for n in ast.walk(node)
+                    n.name
+                    for n in ast.walk(node)
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                 ]
 
-                analysis.classes.append(ExtractedClass(
-                    name=node.name,
-                    bases=bases,
-                    methods=methods,
-                    docstring=ast.get_docstring(node) or "",
-                    line_number=node.lineno,
-                ))
+                analysis.classes.append(
+                    ExtractedClass(
+                        name=node.name,
+                        bases=bases,
+                        methods=methods,
+                        docstring=ast.get_docstring(node) or "",
+                        line_number=node.lineno,
+                    )
+                )
 
             elif isinstance(node, ast.Import):
                 for alias in node.names:
@@ -274,7 +284,9 @@ class Assimilator:
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     names = [alias.name for alias in node.names]
-                    analysis.imports.append(ExtractedImport(module=node.module, names=names, is_from=True))
+                    analysis.imports.append(
+                        ExtractedImport(module=node.module, names=names, is_from=True)
+                    )
 
     def _analyze_generic(self, content: str, analysis: CodeAnalysis, ext: str) -> None:
         """Regex-based analysis for non-Python files."""
@@ -328,7 +340,12 @@ class Assimilator:
                 return None
         elif ext in (".yaml", ".yml"):
             keys = [m.group(1) for m in re.finditer(r"^(\w[\w.-]*):", content, re.MULTILINE)]
-            depth = max((len(line) - len(line.lstrip())) for line in content.split("\n") if line.strip()) // 2
+            depth = (
+                max(
+                    (len(line) - len(line.lstrip())) for line in content.split("\n") if line.strip()
+                )
+                // 2
+            )
         elif ext == ".toml":
             keys = [m.group(1) for m in re.finditer(r"^\[([^\]]+)\]", content, re.MULTILINE)]
             keys += [m.group(1) for m in re.finditer(r"^(\w+)\s*=", content, re.MULTILINE)]
@@ -391,15 +408,28 @@ class Assimilator:
         framework_counts: dict[str, int] = defaultdict(int)
         for ca in result.code_analyses:
             for imp in ca.imports:
-                if imp.module in ("fastapi", "flask", "django", "express", "hono", "nextjs",
-                                  "react", "vue", "svelte", "pydantic", "sqlalchemy", "torch"):
+                if imp.module in (
+                    "fastapi",
+                    "flask",
+                    "django",
+                    "express",
+                    "hono",
+                    "nextjs",
+                    "react",
+                    "vue",
+                    "svelte",
+                    "pydantic",
+                    "sqlalchemy",
+                    "torch",
+                ):
                     framework_counts[imp.module] += 1
 
         # Create + grade framework templates
         for framework, count in framework_counts.items():
             if count >= 2:
                 examples = [
-                    ca for ca in result.code_analyses
+                    ca
+                    for ca in result.code_analyses
                     if any(i.module == framework for i in ca.imports)
                 ][:5]
 
@@ -421,7 +451,7 @@ class Assimilator:
                     "has_async": has_async,
                     "has_type_hints": has_types,
                     "has_docstrings": has_docs,
-                    "created": datetime.now(timezone.utc).isoformat(),
+                    "created": datetime.now(UTC).isoformat(),
                 }
 
                 # Grade the template
@@ -467,7 +497,7 @@ class Assimilator:
                         "sample_count": len(patterns),
                         "max_depth": max_depth,
                         "has_env_vars": has_env,
-                        "created": datetime.now(timezone.utc).isoformat(),
+                        "created": datetime.now(UTC).isoformat(),
                     }
 
                     graded = self._grade_template(
@@ -490,7 +520,9 @@ class Assimilator:
         if result.doc_summaries:
             total_facts = sum(len(ds.key_facts) for ds in result.doc_summaries)
             total_headings = sum(len(ds.headings) for ds in result.doc_summaries)
-            avg_words = sum(ds.word_count for ds in result.doc_summaries) / max(len(result.doc_summaries), 1)
+            avg_words = sum(ds.word_count for ds in result.doc_summaries) / max(
+                len(result.doc_summaries), 1
+            )
 
             doc_template = {
                 "doc_count": len(result.doc_summaries),
@@ -498,7 +530,7 @@ class Assimilator:
                 "total_headings": total_headings,
                 "avg_words": round(avg_words),
                 "top_titles": [ds.title for ds in result.doc_summaries[:10]],
-                "created": datetime.now(timezone.utc).isoformat(),
+                "created": datetime.now(UTC).isoformat(),
             }
             graded = self._grade_template(
                 name="documentation_corpus",
@@ -658,7 +690,7 @@ class Assimilator:
                         result.errors.append(f"Doc knowledge push failed: {e}")
 
             # 3. Push graded templates to Knowledge Forge
-            for tpl in (result.templates_graded if KNOWLEDGE_FORGE_URL else []):
+            for tpl in result.templates_graded if KNOWLEDGE_FORGE_URL else []:
                 try:
                     forge_content = (
                         f"TEMPLATE [{tpl.grade}] {tpl.name} ({tpl.category}): "
@@ -689,7 +721,7 @@ class Assimilator:
 
             # 4. Push graded templates to Shared Brain (importance scaled by grade)
             grade_importance = {"A": 8, "B": 7, "C": 6, "D": 5, "F": 4}
-            for tpl in (result.templates_graded if SHARED_BRAIN_URL else []):
+            for tpl in result.templates_graded if SHARED_BRAIN_URL else []:
                 try:
                     content = (
                         f"GRADED TEMPLATE [{tpl.grade}] {tpl.name}: "
@@ -722,18 +754,31 @@ class Assimilator:
                         f"{MEMORY_PRIME_URL}/store",
                         json={
                             "category": "scan_templates",
-                            "content": json.dumps({
-                                "templates_count": len(result.templates_graded),
-                                "grade_distribution": dict(grade_dist),
-                                "avg_score": round(
-                                    sum(t.score for t in result.templates_graded) / max(len(result.templates_graded), 1), 3
-                                ),
-                                "top_templates": [
-                                    {"name": t.name, "grade": t.grade, "score": t.score, "category": t.category}
-                                    for t in sorted(result.templates_graded, key=lambda x: x.score, reverse=True)[:10]
-                                ],
-                                "timestamp": datetime.now(timezone.utc).isoformat(),
-                            }),
+                            "content": json.dumps(
+                                {
+                                    "templates_count": len(result.templates_graded),
+                                    "grade_distribution": dict(grade_dist),
+                                    "avg_score": round(
+                                        sum(t.score for t in result.templates_graded)
+                                        / max(len(result.templates_graded), 1),
+                                        3,
+                                    ),
+                                    "top_templates": [
+                                        {
+                                            "name": t.name,
+                                            "grade": t.grade,
+                                            "score": t.score,
+                                            "category": t.category,
+                                        }
+                                        for t in sorted(
+                                            result.templates_graded,
+                                            key=lambda x: x.score,
+                                            reverse=True,
+                                        )[:10]
+                                    ],
+                                    "timestamp": datetime.now(UTC).isoformat(),
+                                }
+                            ),
                             "tags": ["scan", "templates", "grading"],
                         },
                     )
@@ -747,9 +792,17 @@ class Assimilator:
     @staticmethod
     def _ext_to_lang(ext: str) -> str:
         return {
-            ".py": "python", ".js": "javascript", ".ts": "typescript",
-            ".tsx": "typescript", ".jsx": "javascript", ".go": "go",
-            ".rs": "rust", ".java": "java", ".cpp": "cpp", ".c": "c", ".cs": "csharp",
+            ".py": "python",
+            ".js": "javascript",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".jsx": "javascript",
+            ".go": "go",
+            ".rs": "rust",
+            ".java": "java",
+            ".cpp": "cpp",
+            ".c": "c",
+            ".cs": "csharp",
         }.get(ext, "unknown")
 
     @staticmethod

@@ -1,10 +1,4 @@
-"""Intelligent Drive Scanner v2.0 — FastAPI Dashboard Server.
-
-Real-time analytics dashboard with WebSocket scan progress,
-RESTful API for file intelligence, and Jinja2 HTML templates.
-
-Port: 8460
-"""
+"""Intelligent Drive Scanner v2.1 — governed dashboard and API service."""
 
 from __future__ import annotations
 
@@ -13,7 +7,8 @@ import json
 import os
 import shutil
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +17,22 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
+from pydantic import ValidationError
 from starlette.requests import Request
 
-from config import DASHBOARD_PORT, LOG_DIR, PROJECT_ROOT, ScanConfig, validate_scan_path
+from config import LOG_DIR, PROJECT_ROOT, ScanConfig, validate_scan_path
+from dashboard.api_models import (
+    RecommendationExecuteRequest,
+    ScanCancelRequest,
+    ScanStartRequest,
+)
+from dashboard.security import (
+    API_VERSION,
+    authorized_client,
+    max_request_bytes,
+    public_file_record,
+    public_proposal,
+)
 from storage.db import IntelligenceDB
 from storage.models import Recommendation, ScanProgress
 
@@ -32,8 +40,6 @@ DASHBOARD_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = DASHBOARD_DIR / "templates"
 STATIC_DIR = DASHBOARD_DIR / "static"
 
-# The dashboard page needs d3 from d3js.org, its own static assets, and uses
-# inline <style> / style="" attributes (hence 'unsafe-inline' for styles only).
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; "
     "script-src 'self' https://d3js.org; "
@@ -43,7 +49,8 @@ CONTENT_SECURITY_POLICY = (
     "font-src 'self'; "
     "object-src 'none'; "
     "frame-ancestors 'none'; "
-    "base-uri 'self'"
+    "base-uri 'self'; "
+    "form-action 'self'"
 )
 
 SECURITY_HEADERS = {
@@ -53,37 +60,59 @@ SECURITY_HEADERS = {
     "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "Cross-Origin-Resource-Policy": "same-origin",
+    "Cross-Origin-Opener-Policy": "same-origin",
 }
 
 AUDIT_LOG_PATH = LOG_DIR / "actions_audit.jsonl"
 QUARANTINE_DIR = PROJECT_ROOT / "quarantine"
 
 
-def _audit_action(
-    rec_id: int, category: str | None, decision: str, reason: str, path_count: int
-) -> None:
-    """Append one line to the file-action audit log.
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
-    Must never contain file contents or matched pattern values.
-    """
+
+def _json(payload: dict[str, Any], status_code: int = 200) -> JSONResponse:
+    """Return a versioned JSON response without mutating the source payload."""
+    body = {"api_version": API_VERSION, **payload}
+    return JSONResponse(body, status_code=status_code)
+
+
+def _token_from_headers(headers: Any) -> str:
+    direct = headers.get("x-drivescan-token", "")
+    if direct:
+        return direct
+    authorization = headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def _audit_action(
+    rec_id: int,
+    category: str | None,
+    decision: str,
+    reason: str,
+    path_count: int,
+) -> None:
+    """Append a content-free action audit record."""
     entry = {
-        "ts": datetime.now(timezone.utc).isoformat(),
+        "ts": _now_iso(),
         "rec_id": rec_id,
         "category": category,
         "decision": decision,
-        "reason": reason,
+        "reason": reason[:500],
         "path_count": path_count,
     }
     try:
         AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-    except OSError as e:
-        logger.error("Failed to write action audit entry: {}", e)
+        with AUDIT_LOG_PATH.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, sort_keys=True) + "\n")
+    except OSError as exc:
+        logger.error("Failed to write action audit entry: {}", exc)
 
 
 def _affected_paths(db: IntelligenceDB, rec: Recommendation) -> list[str]:
-    """Resolve a recommendation's affected file IDs (JSON list) to paths."""
     if not rec.affected_files:
         return []
     try:
@@ -91,9 +120,9 @@ def _affected_paths(db: IntelligenceDB, rec: Recommendation) -> list[str]:
     except (json.JSONDecodeError, TypeError):
         return []
     paths: list[str] = []
-    for fid in ids:
+    for file_id in ids:
         try:
-            file = db.get_file(int(fid))
+            file = db.get_file(int(file_id))
         except (TypeError, ValueError):
             file = None
         if file and file.path:
@@ -102,199 +131,259 @@ def _affected_paths(db: IntelligenceDB, rec: Recommendation) -> list[str]:
 
 
 def _quarantine_files(paths: list[str], scan_id: int) -> list[dict[str, str]]:
-    """Move files into ./quarantine/<scan_id>/ instead of deleting them."""
+    """Move files to a reversible quarantine journal; never delete."""
     qdir = QUARANTINE_DIR / str(scan_id)
     qdir.mkdir(parents=True, exist_ok=True)
     moved: list[dict[str, str]] = []
-    for p in paths:
-        src = Path(p)
+    for raw_path in paths:
+        src = Path(raw_path)
         if not src.is_file():
             continue
         dest = qdir / src.name
-        n = 1
+        suffix = 1
         while dest.exists():
-            dest = qdir / f"{src.stem}_{n}{src.suffix}"
-            n += 1
+            dest = qdir / f"{src.stem}_{suffix}{src.suffix}"
+            suffix += 1
         try:
             shutil.move(str(src), str(dest))
-        except OSError as e:
-            logger.error("Quarantine move failed for a file: {}", e)
+        except OSError as exc:
+            logger.error("Quarantine move failed for path_id={}: {}", src.name, exc)
             continue
         moved.append({"original": str(src), "quarantined": str(dest)})
     if moved:
-        with open(qdir / "manifest.jsonl", "a", encoding="utf-8") as fh:
-            for m in moved:
-                fh.write(json.dumps(m) + "\n")
+        with (qdir / "manifest.jsonl").open("a", encoding="utf-8") as handle:
+            for item in moved:
+                handle.write(json.dumps(item, sort_keys=True) + "\n")
     return moved
 
 
-# ── WebSocket Manager ────────────────────────────────────────────────────────
-
-
 class ConnectionManager:
-    """Manage WebSocket connections for real-time scan updates."""
+    """Manage scan-progress WebSocket clients."""
 
     def __init__(self) -> None:
         self.active: list[WebSocket] = []
 
-    async def connect(self, ws: WebSocket) -> None:
-        await ws.accept()
-        self.active.append(ws)
-        logger.debug("WebSocket connected, total: {}", len(self.active))
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active.append(websocket)
 
-    def disconnect(self, ws: WebSocket) -> None:
-        if ws in self.active:
-            self.active.remove(ws)
-        logger.debug("WebSocket disconnected, total: {}", len(self.active))
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.active:
+            self.active.remove(websocket)
 
     async def broadcast(self, data: dict[str, Any]) -> None:
         dead: list[WebSocket] = []
-        for ws in self.active:
+        for websocket in self.active:
             try:
-                await ws.send_json(data)
+                await websocket.send_json({"api_version": API_VERSION, **data})
             except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.disconnect(ws)
+                dead.append(websocket)
+        for websocket in dead:
+            self.disconnect(websocket)
 
 
 ws_manager = ConnectionManager()
 
 
-# ── App Factory ──────────────────────────────────────────────────────────────
+def create_app(
+    db_path: str | Path | None = None,
+    *,
+    enforce_access: bool | None = None,
+) -> FastAPI:
+    """Create the governed scanner API.
 
-
-def create_app(db_path: str | Path | None = None) -> FastAPI:
-    """Create the FastAPI dashboard application.
-
-    Args:
-        db_path: Path to SQLite database. Uses default if None.
-
-    Returns:
-        Configured FastAPI application.
+    Custom database instances default to access enforcement off for isolated
+    tests. The production singleton always enables it.
     """
     from config import DB_PATH
-    db = IntelligenceDB(db_path or DB_PATH)
+
+    db = IntelligenceDB(Path(db_path or DB_PATH))
+    enforce = (db_path is None) if enforce_access is None else enforce_access
+    active_tasks: dict[int, asyncio.Task[None]] = {}
 
     app = FastAPI(
         title="Intelligent Drive Scanner",
-        version="2.0.0",
-        description="AI-powered file intelligence with 2,632 domain engines",
+        version="2.1.0",
+        description="Governed filesystem intelligence and build proposals",
     )
+    app.state.db = db
+    app.state.active_tasks = active_tasks
+    app.state.enforce_access = enforce
 
-    # Mount static files
     STATIC_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-    # ── Middleware ───────────────────────────────────────────────────────
+    def resolve_scan_id(scan_id: int | None, *, allow_running: bool = False) -> int | None:
+        if scan_id is not None:
+            return scan_id
+        scan = db.latest_completed_scan()
+        if scan:
+            return scan.id
+        if allow_running:
+            scans = db.list_scans(limit=1)
+            return scans[0].id if scans else None
+        return None
 
     @app.middleware("http")
-    async def observability_and_security_headers(
-        request: Request, call_next: Any
-    ) -> Any:
-        """Log one line per request and attach security headers."""
+    async def boundary_and_observability(request: Request, call_next: Any) -> Any:
+        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
         start = time.perf_counter()
-        response = await call_next(request)
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > max_request_bytes():
+                    return _json(
+                        {"error": "request_too_large", "detail": "request body exceeds policy"},
+                        413,
+                    )
+            except ValueError:
+                return _json({"error": "invalid_content_length", "detail": "invalid header"}, 400)
+
+        if enforce and not authorized_client(
+            request.client.host if request.client else None,
+            _token_from_headers(request.headers),
+        ):
+            logger.warning(
+                "Denied scanner request {} {} request_id={}",
+                request.method,
+                request.url.path,
+                request_id,
+            )
+            response = _json(
+                {
+                    "error": "access_denied",
+                    "detail": "scanner service access denied",
+                    "request_id": request_id,
+                },
+                403,
+            )
+        else:
+            response = await call_next(request)
+
         duration_ms = (time.perf_counter() - start) * 1000.0
-        client_host = request.client.host if request.client else "-"
-        level = "WARNING" if duration_ms > 2000 else "INFO"
         logger.log(
-            level,
-            "{} {} -> {} ({:.1f}ms) client={}",
+            "WARNING" if duration_ms > 2000 else "INFO",
+            "{} {} -> {} ({:.1f}ms) client={} request_id={}",
             request.method,
             request.url.path,
             response.status_code,
             duration_ms,
-            client_host,
+            request.client.host if request.client else "-",
+            request_id,
         )
+        response.headers["X-Request-ID"] = request_id
         for header, value in SECURITY_HEADERS.items():
             response.headers[header] = value
         return response
-
-    # ── Exception Handling ───────────────────────────────────────────────
-    # HTTPException is deliberately not intercepted: FastAPI's normal 4xx
-    # handling stands. Only truly unhandled errors land here.
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         logger.opt(exception=exc).error(
             "Unhandled error on {} {}", request.method, request.url.path
         )
-        response = JSONResponse(
-            status_code=500,
-            content={"error": "internal_error", "detail": "An internal error occurred."},
-        )
-        # This response bypasses the middleware stack, so attach headers here too.
+        response = _json({"error": "internal_error", "detail": "An internal error occurred."}, 500)
         for header, value in SECURITY_HEADERS.items():
             response.headers[header] = value
         return response
 
-    # ── HTML Routes ──────────────────────────────────────────────────────
-
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
-        """Main dashboard page."""
-        return templates.TemplateResponse("index.html", {"request": request})
+        return templates.TemplateResponse(request=request, name="index.html")
 
-    # ── Scan API ─────────────────────────────────────────────────────────
-
-    @app.post("/api/scan/start")
-    async def start_scan(body: dict[str, Any]) -> JSONResponse:
-        """Start a new intelligence scan."""
-        paths = body.get("paths", [])
-        profile = body.get("profile", "INTELLIGENCE")
-        if not paths:
-            raise HTTPException(400, "paths required")
-
-        for p in paths:
-            ok, reason = validate_scan_path(p)
+    @app.post("/api/scan/start", status_code=202)
+    async def start_scan(body: ScanStartRequest) -> JSONResponse:
+        for path in body.paths:
+            ok, reason = validate_scan_path(path)
             if not ok:
-                logger.warning("Scan start rejected: {}", reason)
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "path_rejected", "path": str(p), "reason": reason},
+                return _json(
+                    {"error": "path_rejected", "path_id": "redacted", "reason": reason}, 400
                 )
 
-        # Run scan in background
-        from scanner import IntelligenceScanOrchestrator
-        config = ScanConfig()
-        orchestrator = IntelligenceScanOrchestrator(config)
+        running = [scan_id for scan_id, task in active_tasks.items() if not task.done()]
+        if running:
+            return _json(
+                {
+                    "error": "scan_already_running",
+                    "detail": "only one active scan is allowed",
+                    "scan_id": running[0],
+                },
+                409,
+            )
 
-        def progress_cb(progress: ScanProgress) -> None:
-            asyncio.create_task(ws_manager.broadcast(progress.model_dump()))
+        scan_id = db.create_scan(drives=body.paths, profile=body.profile)
+        orchestrator = __import__("scanner").IntelligenceScanOrchestrator(ScanConfig(), db=db)
+        loop = asyncio.get_running_loop()
 
-        orchestrator.add_progress_callback(progress_cb)
+        def progress_callback(progress: ScanProgress) -> None:
+            loop.create_task(ws_manager.broadcast(progress.model_dump()))
 
-        async def run() -> None:
+        orchestrator.add_progress_callback(progress_callback)
+
+        async def run_owned_scan() -> None:
             try:
-                await orchestrator.run_scan(paths, profile)
-            except Exception as e:
-                logger.error("Background scan failed: {}", e)
-                await ws_manager.broadcast({"phase": "failed", "error": str(e)})
+                await orchestrator.run_scan(body.paths, body.profile, scan_id=scan_id)
+            finally:
+                active_tasks.pop(scan_id, None)
 
-        asyncio.create_task(run())
-        return JSONResponse({"status": "started", "message": "Scan started in background"})
+        active_tasks[scan_id] = asyncio.create_task(run_owned_scan(), name=f"drivescan-{scan_id}")
+        return _json(
+            {
+                "status": "accepted",
+                "scan_id": scan_id,
+                "run_id": f"drivescan-{scan_id}",
+                "profile": body.profile,
+                "normalized_roots": [Path(path).anchor or Path(path).name for path in body.paths],
+                "status_url": f"/api/scans/{scan_id}/status",
+                "stages_url": f"/api/scans/{scan_id}/stages",
+                "accepted_at": _now_iso(),
+            },
+            202,
+        )
 
     @app.get("/api/scan/status")
     async def scan_status() -> JSONResponse:
-        """Get current scan status."""
         scans = db.list_scans(limit=1)
         if not scans:
-            return JSONResponse({"status": "no_scans"})
-        scan = scans[0]
-        return JSONResponse(scan.model_dump())
+            return _json({"status": "no_scans"})
+        return _json(scans[0].model_dump())
+
+    @app.get("/api/scans/latest")
+    async def latest_scan() -> JSONResponse:
+        scan = db.latest_completed_scan()
+        if not scan:
+            raise HTTPException(404, "No completed scans found")
+        return _json(scan.model_dump())
+
+    @app.get("/api/scans/{scan_id}/status")
+    async def specific_scan_status(scan_id: int) -> JSONResponse:
+        scan = db.get_scan(scan_id)
+        if not scan:
+            raise HTTPException(404, "Scan not found")
+        return _json({**scan.model_dump(), "stages": db.get_scan_stages(scan_id)})
+
+    @app.get("/api/scans/{scan_id}/stages")
+    async def scan_stages(scan_id: int) -> JSONResponse:
+        if not db.get_scan(scan_id):
+            raise HTTPException(404, "Scan not found")
+        return _json({"scan_id": scan_id, "stages": db.get_scan_stages(scan_id)})
+
+    @app.post("/api/scans/{scan_id}/cancel")
+    async def cancel_scan(scan_id: int, body: ScanCancelRequest) -> JSONResponse:
+        task = active_tasks.get(scan_id)
+        if task is None or task.done():
+            return _json({"error": "scan_not_active", "detail": "scan is not active"}, 409)
+        task.cancel(body.reason)
+        db.cancel_scan(scan_id)
+        _audit_action(scan_id, "scan", "cancelled", body.reason, 0)
+        return _json({"status": "cancellation_requested", "scan_id": scan_id})
 
     @app.get("/api/scan/{scan_id}/results")
     async def scan_results(scan_id: int) -> JSONResponse:
-        """Get scan results summary."""
         summary = db.get_scan_summary(scan_id)
         if not summary:
             raise HTTPException(404, "Scan not found")
-        return JSONResponse(summary.model_dump())
-
-    # ── File API ─────────────────────────────────────────────────────────
+        return _json({**summary.model_dump(), "stages": db.get_scan_stages(scan_id)})
 
     @app.get("/api/files")
     async def list_files(
@@ -303,420 +392,355 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         extension: str | None = None,
         min_score: float | None = None,
         search: str | None = None,
-        limit: int = Query(default=100, le=1000),
-        offset: int = 0,
+        limit: int = Query(default=100, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
     ) -> JSONResponse:
-        """List files with optional filters."""
+        del min_score  # reserved for a versioned score-filter contract
+        sid = resolve_scan_id(scan_id)
+        if sid is None:
+            return _json({"scan_id": None, "files": [], "count": 0})
         if search:
             rows = db.search_files(search, limit=limit)
-            return JSONResponse({"files": [{"file": r, "score": None} for r in rows],
-                                 "count": len(rows)})
-        files = db.list_files(
-            scan_id=scan_id,
-            extension=extension,
-            domain=domain,
-            limit=limit,
-            offset=offset,
-        )
-
-        results = []
-        for f in files:
-            score = db.get_score(f.id or 0)
-            results.append({
-                "file": f.model_dump(),
-                "score": score.model_dump() if score else None,
-            })
-        return JSONResponse({"files": results, "count": len(results)})
+            items = []
+            for row in rows:
+                record = db.get_file(int(row.get("id", 0))) if isinstance(row, dict) else None
+                if record and record.scan_id == sid:
+                    items.append({"file": public_file_record(record), "score": None})
+        else:
+            files = db.list_files(
+                scan_id=sid, extension=extension, domain=domain, limit=limit, offset=offset
+            )
+            items = []
+            for file in files:
+                score = db.get_score(file.id or 0, sid)
+                items.append(
+                    {
+                        "file": public_file_record(file),
+                        "score": score.model_dump() if score and score.scan_id == sid else None,
+                    }
+                )
+        return _json({"scan_id": sid, "files": items, "count": len(items)})
 
     @app.get("/api/files/{file_id}")
-    async def get_file_detail(file_id: int) -> JSONResponse:
-        """Get full file detail with classifications and scores."""
+    async def get_file_detail(file_id: int, scan_id: int | None = None) -> JSONResponse:
+        sid = resolve_scan_id(scan_id)
         file = db.get_file(file_id)
-        if not file:
+        if not file or sid is None:
             raise HTTPException(404, "File not found")
-
-        score = db.get_score(file_id)
-        classifications = db.get_classifications(file_id)
-        relationships = db.get_file_relationships(file_id)
-
-        return JSONResponse({
-            "file": file.model_dump(),
-            "score": score.model_dump() if score else None,
-            "classifications": [c.model_dump() for c in classifications],
-            "relationships": [r.model_dump() for r in relationships],
-        })
-
-    # ── Domain API ───────────────────────────────────────────────────────
+        observed_ids = {item.id for item in db.list_files(scan_id=sid, limit=100000)}
+        if file_id not in observed_ids:
+            raise HTTPException(404, "File not found")
+        score = db.get_score(file_id, sid)
+        return _json(
+            {
+                "scan_id": sid,
+                "file": public_file_record(file),
+                "score": score.model_dump() if score and score.scan_id == sid else None,
+                "classifications": [
+                    c.model_dump() for c in db.get_classifications(file_id) if c.scan_id == sid
+                ],
+                "relationships": [
+                    r.model_dump() for r in db.get_file_relationships(file_id) if r.scan_id == sid
+                ],
+            }
+        )
 
     @app.get("/api/domains")
     async def list_domains(scan_id: int | None = None) -> JSONResponse:
-        """Get domain distribution statistics."""
-        sid = scan_id
-        if not sid:
-            scans = db.list_scans(limit=1)
-            if scans:
-                sid = scans[0].id or 0
-        if not sid:
-            return JSONResponse({"domains": []})
-
-        stats = db.get_domain_stats(sid)
-        return JSONResponse({
-            "domains": [s.model_dump() for s in stats],
-            "total_domains": len(stats),
-        })
-
-    # ── Duplicate API ────────────────────────────────────────────────────
+        sid = resolve_scan_id(scan_id)
+        stats = db.get_domain_stats(sid) if sid else []
+        return _json(
+            {
+                "scan_id": sid,
+                "domains": [item.model_dump() for item in stats],
+                "total_domains": len(stats),
+            }
+        )
 
     @app.get("/api/duplicates")
     async def list_duplicates(scan_id: int | None = None) -> JSONResponse:
-        """Get duplicate file clusters."""
-        clusters = db.get_duplicate_clusters(scan_id=scan_id)
-        return JSONResponse({
-            "clusters": clusters,
-            "total_clusters": len(clusters),
-            "total_wasted_bytes": sum(c.get("total_wasted_bytes") or 0 for c in clusters),
-        })
-
-    # ── Recommendation API ───────────────────────────────────────────────
+        sid = resolve_scan_id(scan_id)
+        clusters = db.get_duplicate_clusters(scan_id=sid) if sid else []
+        return _json(
+            {
+                "scan_id": sid,
+                "clusters": clusters,
+                "total_clusters": len(clusters),
+                "total_wasted_bytes": sum(item.get("total_wasted_bytes") or 0 for item in clusters),
+            }
+        )
 
     @app.get("/api/recommendations")
     async def list_recommendations(scan_id: int | None = None) -> JSONResponse:
-        """Get all recommendations."""
-        sid = scan_id
-        if not sid:
-            scans = db.list_scans(limit=1)
-            if scans:
-                sid = scans[0].id or 0
-        if not sid:
-            return JSONResponse({"recommendations": []})
-
-        recs = db.get_recommendations(sid)
-        return JSONResponse({
-            "recommendations": [r.model_dump() for r in recs],
-            "total": len(recs),
-        })
+        sid = resolve_scan_id(scan_id)
+        recs = db.get_recommendations(sid) if sid else []
+        return _json(
+            {
+                "scan_id": sid,
+                "recommendations": [rec.model_dump() for rec in recs],
+                "total": len(recs),
+            }
+        )
 
     @app.post("/api/recommendations/{rec_id}/execute")
     async def execute_recommendation(
-        rec_id: int, body: dict[str, Any] | None = Body(default=None)
+        rec_id: int,
+        body: dict[str, Any] | None = Body(default=None),
     ) -> JSONResponse:
-        """Execute a recommendation — gated, non-destructive, audited.
-
-        Requires DRIVESCAN_ALLOW_FILE_ACTIONS=1 in the environment plus a
-        {"confirm": <rec_id>} body. "delete" recommendations quarantine files
-        under ./quarantine/<scan_id>/ instead of removing them.
-        """
-        body = body or {}
-
         def refuse(reason: str, category: str | None = None, path_count: int = 0) -> JSONResponse:
             _audit_action(rec_id, category, "refused", reason, path_count)
-            return JSONResponse(
-                status_code=403,
-                content={"error": "action_disabled", "reason": reason},
-            )
+            return _json({"error": "action_disabled", "reason": reason}, 403)
 
         if os.environ.get("DRIVESCAN_ALLOW_FILE_ACTIONS") != "1":
-            return refuse(
-                "file actions are disabled (set DRIVESCAN_ALLOW_FILE_ACTIONS=1 to enable)"
-            )
-
-        confirm = body.get("confirm")
-        if confirm is None or str(confirm) != str(rec_id):
-            return refuse("missing or mismatched 'confirm' value in request body")
-
+            return refuse("file actions are disabled by policy")
+        try:
+            confirmation = RecommendationExecuteRequest.model_validate(body or {})
+        except ValidationError:
+            return refuse("missing, invalid, or unexpected confirmation fields")
+        if confirmation.confirm != rec_id:
+            return refuse("confirmation does not match recommendation")
         rec = db.get_recommendation(rec_id)
         if rec is None:
-            _audit_action(rec_id, None, "refused", "recommendation not found", 0)
             raise HTTPException(404, "Recommendation not found")
-
         paths = _affected_paths(db, rec)
-        for p in paths:
-            ok, reason = validate_scan_path(p)
+        for path in paths:
+            ok, reason = validate_scan_path(path)
             if not ok:
-                return refuse(
-                    f"affected path rejected: {reason}", rec.category, len(paths)
-                )
-
+                return refuse(f"affected path rejected: {reason}", rec.category, len(paths))
         if rec.category == "delete":
             moved = _quarantine_files(paths, rec.scan_id)
+            if len(moved) != len(paths) or not moved:
+                _audit_action(
+                    rec_id, rec.category, "partial_failure", "quarantine incomplete", len(paths)
+                )
+                return _json(
+                    {"error": "quarantine_incomplete", "moved": len(moved), "expected": len(paths)},
+                    409,
+                )
             db.update_recommendation_status(rec_id, "executed")
-            _audit_action(
-                rec_id, rec.category, "executed",
-                f"quarantined {len(moved)} of {len(paths)} file(s)", len(paths),
-            )
-            return JSONResponse(
-                {"status": "executed", "id": rec_id, "quarantined": len(moved)}
-            )
-
+            _audit_action(rec_id, rec.category, "executed", "all files quarantined", len(paths))
+            return _json({"status": "executed", "id": rec_id, "quarantined": len(moved)})
         db.update_recommendation_status(rec_id, "executed")
         _audit_action(rec_id, rec.category, "executed", "status updated", len(paths))
-        return JSONResponse({"status": "executed", "id": rec_id})
-
-    # ── Project Advisor Proposal API (Stage 10) ──────────────────────────
-
-    def _proposal_to_prompt(p: dict[str, Any]) -> dict[str, Any]:
-        """Turn one advisor proposal into an echo.prompts.add build-queue row."""
-        base = (p.get("suggested_name") or p.get("title") or "proposal")
-        base = "".join(c if (c.isalnum() or c in "-_ ") else "" for c in str(base))
-        base = base.strip().lower().replace(" ", "-").replace("_", "-")[:48].strip("-")
-        slug = f"drivescan-prop-{p.get('id')}-{base}" if base else f"drivescan-prop-{p.get('id')}"
-
-        lines = [
-            f"# {p.get('title', 'Untitled Proposal')}",
-            "",
-            f"**Kind:** {p.get('kind')}  |  **Type:** {p.get('proposal_type')}  |  "
-            f"**Category:** {p.get('category')}  |  **Domain:** {p.get('domain')}",
-            f"**Priority:** {p.get('priority_score')}/100  |  "
-            f"**Effort:** {p.get('effort_estimate')}",
-            "",
-            p.get("summary", ""),
-            "",
-            "## Rationale",
-        ]
-        lines += [f"- {r}" for r in (p.get("rationale") or [])]
-        stack = p.get("suggested_stack") or []
-        if stack:
-            lines += ["", f"**Suggested stack:** {', '.join(stack)}"]
-        evidence = (p.get("source_files") or [])[:15]
-        if evidence:
-            lines += ["", "## Evidence (source files)"]
-            lines += [f"- `{s}`" for s in evidence]
-        lines += ["", "_Source: Intelligent Drive Scanner Stage-10 Project Advisor "
-                  f"(scan #{p.get('scan_id')}, proposal #{p.get('id')})._"]
-
-        tags = ["drive-scanner-proposal"]
-        for t in (p.get("kind"), p.get("proposal_type"), p.get("category"), p.get("domain")):
-            if t:
-                tags.append(str(t).strip().lower().replace("_", "-"))
-
-        return {
-            "slug": slug,
-            "title": p.get("title", "Drive Scanner proposal"),
-            "body": "\n".join(lines),
-            "priority": 5,
-            "tags": tags,
-        }
-
-    def _feed_queue(prompts: list[dict[str, Any]]) -> dict[str, Any]:
-        """Best-effort push of prepared prompts to echo.prompts.add via the gate.
-
-        Off by default; only reached when the caller passes queue=true. Requires a
-        sovereign key in the environment (ECHO_SOVEREIGN_KEY / ECHO_SDK_SOVEREIGN_KEY).
-        Returns what was submitted; never raises into the request path.
-        """
-        import urllib.request
-        import urllib.error
-
-        key = (
-            os.environ.get("ECHO_SOVEREIGN_KEY")
-            or os.environ.get("ECHO_SDK_SOVEREIGN_KEY")
-            or ""
-        )
-        gate = os.environ.get("ECHO_SDK_GATE", "http://192.168.1.220:8000")
-        if not key:
-            return {"queued": False, "reason": "no sovereign key in env", "prepared": prompts}
-
-        submitted: list[dict[str, Any]] = []
-        for pr in prompts:
-            envelope = {
-                "envelope_version": 1,
-                "capability": "echo.prompts.add",
-                "params": {"command": "add", "options": pr},
-            }
-            data = json.dumps(envelope).encode("utf-8")
-            req = urllib.request.Request(
-                f"{gate}/sdk/invoke",
-                data=data,
-                headers={"Content-Type": "application/json", "X-Echo-API-Key": key},
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    submitted.append({"slug": pr["slug"], "status": resp.status})
-            except (urllib.error.URLError, OSError, ValueError) as e:
-                submitted.append({"slug": pr["slug"], "error": str(e)[:160]})
-        ok = sum(1 for s in submitted if s.get("status") == 200)
-        return {"queued": True, "submitted": submitted, "ok": ok, "count": len(prompts)}
+        return _json({"status": "executed", "id": rec_id})
 
     @app.get("/api/proposals")
     async def list_proposals(
+        request: Request,
         scan_id: int | None = None,
-        kind: str | None = None,
-        limit: int = Query(default=100, le=1000),
-        queue: bool = False,
-        queue_top: int = Query(default=10, ge=1, le=100),
+        kind: str | None = Query(default=None, pattern="^(completion|new_build)$"),
+        limit: int = Query(default=100, ge=1, le=1000),
     ) -> JSONResponse:
-        """Project Advisor build/program proposals — projects that need completion
-        (TODO/WIP/STUB) plus new builds that should be built, priority-scored.
-
-        Query params:
-            scan_id: restrict to one scan (default: across all scans)
-            kind:    'completion' | 'new_build' (also accepts a raw category or
-                     proposal_type)
-            limit:   max rows
-            queue:   if true, feed the top proposals to the build queue
-                     (echo.prompts.add). Off by default.
-            queue_top: how many top proposals to queue when queue=true.
-        """
-        proposals = db.get_proposals(scan_id=scan_id, kind=kind, limit=limit)
-        payload: dict[str, Any] = {
-            "proposals": proposals,
-            "count": len(proposals),
-            "completion": sum(1 for p in proposals if p.get("kind") == "completion"),
-            "new_build": sum(1 for p in proposals if p.get("kind") == "new_build"),
-            "scan_id": scan_id,
-            "kind": kind,
-        }
-        if queue and proposals:
-            prompts = [_proposal_to_prompt(p) for p in proposals[:queue_top]]
-            payload["queue_feed"] = _feed_queue(prompts)
-        return JSONResponse(payload)
+        allowed_query = {"scan_id", "kind", "limit"}
+        unknown_query = set(request.query_params) - allowed_query
+        if unknown_query:
+            return _json(
+                {
+                    "error": "unknown_query_parameter",
+                    "detail": f"unsupported query parameters: {', '.join(sorted(unknown_query))}",
+                },
+                400,
+            )
+        sid = resolve_scan_id(scan_id)
+        proposals = db.get_proposals(scan_id=sid, kind=kind, limit=limit) if sid else []
+        public = [public_proposal(item) for item in proposals]
+        return _json(
+            {
+                "scan_id": sid,
+                "kind": kind,
+                "proposals": public,
+                "count": len(public),
+                "completion": sum(1 for item in public if item.get("kind") == "completion"),
+                "new_build": sum(1 for item in public if item.get("kind") == "new_build"),
+                "queue_supported": False,
+            }
+        )
 
     @app.get("/api/scan/{scan_id}/proposals")
     async def scan_proposals(
         scan_id: int,
-        kind: str | None = None,
-        limit: int = Query(default=100, le=1000),
+        kind: str | None = Query(default=None, pattern="^(completion|new_build)$"),
+        limit: int = Query(default=100, ge=1, le=1000),
     ) -> JSONResponse:
-        """Project Advisor proposals for a specific scan, priority-ordered."""
-        proposals = db.get_proposals(scan_id=scan_id, kind=kind, limit=limit)
-        return JSONResponse({
-            "scan_id": scan_id,
-            "proposals": proposals,
-            "count": len(proposals),
-            "completion": sum(1 for p in proposals if p.get("kind") == "completion"),
-            "new_build": sum(1 for p in proposals if p.get("kind") == "new_build"),
-        })
+        proposals = [
+            public_proposal(item)
+            for item in db.get_proposals(scan_id=scan_id, kind=kind, limit=limit)
+        ]
+        return _json(
+            {
+                "scan_id": scan_id,
+                "proposals": proposals,
+                "count": len(proposals),
+                "completion": sum(1 for item in proposals if item.get("kind") == "completion"),
+                "new_build": sum(1 for item in proposals if item.get("kind") == "new_build"),
+            }
+        )
 
-    # ── Score API ────────────────────────────────────────────────────────
+    @app.get("/api/storage/summary")
+    async def storage_summary(scan_id: int | None = None) -> JSONResponse:
+        sid = resolve_scan_id(scan_id)
+        scan = db.get_scan(sid) if sid else None
+        if not scan:
+            return _json({"scan_id": None, "drives": [], "health_source": "filesystem_only"})
+        try:
+            roots = json.loads(scan.drives) if isinstance(scan.drives, str) else scan.drives
+        except json.JSONDecodeError:
+            roots = []
+        seen: set[str] = set()
+        drives: list[dict[str, Any]] = []
+        for raw_root in roots:
+            anchor = Path(str(raw_root)).anchor or str(raw_root)
+            key = anchor.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                usage = shutil.disk_usage(anchor)
+            except OSError:
+                drives.append({"drive": anchor, "state": "unavailable", "health": "unknown"})
+                continue
+            used_percent = round((usage.used / usage.total) * 100, 1) if usage.total else 0.0
+            state = (
+                "critical"
+                if used_percent >= 95
+                else "warning"
+                if used_percent >= 85
+                else "available"
+            )
+            drives.append(
+                {
+                    "drive": anchor,
+                    "total_bytes": usage.total,
+                    "used_bytes": usage.used,
+                    "free_bytes": usage.free,
+                    "used_percent": used_percent,
+                    "state": state,
+                    "health": "unknown",
+                    "health_reason": "SMART/device health is not collected by this service",
+                }
+            )
+        return _json({"scan_id": sid, "drives": drives, "health_source": "filesystem_capacity"})
 
     @app.get("/api/scores/distribution")
     async def score_distribution(
-        scan_id: int | None = None,
-        dimension: str = "overall_score",
+        scan_id: int | None = None, dimension: str = "overall_score"
     ) -> JSONResponse:
-        """Get score distribution histogram."""
-        sid = scan_id
-        if not sid:
-            scans = db.list_scans(limit=1)
-            if scans:
-                sid = scans[0].id or 0
-        if not sid:
-            return JSONResponse({"distribution": []})
-
-        dist = db.get_score_distribution(dimension=dimension, scan_id=sid)
-        return JSONResponse({"dimension": dimension, "buckets": dist})
+        sid = resolve_scan_id(scan_id)
+        return _json(
+            {
+                "scan_id": sid,
+                "dimension": dimension,
+                "buckets": db.get_score_distribution(dimension=dimension, scan_id=sid)
+                if sid
+                else [],
+            }
+        )
 
     @app.get("/api/scores/top")
     async def top_scores(
         scan_id: int | None = None,
         dimension: str = "overall_score",
-        limit: int = 20,
+        limit: int = Query(default=20, ge=1, le=1000),
     ) -> JSONResponse:
-        """Get top-scoring files."""
-        sid = scan_id
-        if not sid:
-            scans = db.list_scans(limit=1)
-            if scans:
-                sid = scans[0].id or 0
-        if not sid:
-            return JSONResponse({"files": []})
-
-        top = db.get_top_scores(dimension=dimension, limit=limit, scan_id=sid)
-        return JSONResponse({"files": top})
+        sid = resolve_scan_id(scan_id)
+        rows = db.get_top_scores(dimension=dimension, limit=limit, scan_id=sid) if sid else []
+        for row in rows:
+            if "path" in row:
+                row.update(public_file_record(row))
+                row.pop("path", None)
+        return _json({"scan_id": sid, "files": rows})
 
     @app.get("/api/scores/risk")
-    async def high_risk_files(
-        scan_id: int | None = None,
-        min_risk: float = 50.0,
-    ) -> JSONResponse:
-        """Get high-risk files."""
-        sid = scan_id
-        if not sid:
-            scans = db.list_scans(limit=1)
-            if scans:
-                sid = scans[0].id or 0
-        if not sid:
-            return JSONResponse({"files": []})
-
-        risk_files = db.get_high_risk_files(threshold=min_risk, scan_id=sid)
-        return JSONResponse({"files": risk_files})
-
-    # ── Export ───────────────────────────────────────────────────────────
+    async def high_risk_files(scan_id: int | None = None, min_risk: float = 50.0) -> JSONResponse:
+        sid = resolve_scan_id(scan_id)
+        rows = db.get_high_risk_files(threshold=min_risk, scan_id=sid) if sid else []
+        for row in rows:
+            if "path" in row:
+                row.update(public_file_record(row))
+                row.pop("path", None)
+        return _json({"scan_id": sid, "files": rows})
 
     @app.get("/api/export/report")
     async def export_report(scan_id: int | None = None) -> JSONResponse:
-        """Export full intelligence report as JSON."""
-        sid = scan_id
+        sid = resolve_scan_id(scan_id)
         if not sid:
-            scans = db.list_scans(limit=1)
-            if scans:
-                sid = scans[0].id or 0
-        if not sid:
-            raise HTTPException(404, "No scans found")
-
+            raise HTTPException(404, "No completed scans found")
         summary = db.get_scan_summary(sid)
-        domains = db.get_domain_stats(sid)
-        recs = db.get_recommendations(sid)
-        risk = db.get_high_risk_files(scan_id=sid)
-
-        return JSONResponse({
-            "report_version": "2.0",
-            "scan_summary": summary.model_dump() if summary else None,
-            "domain_stats": [d.model_dump() for d in domains],
-            "recommendations": [r.model_dump() for r in recs],
-            "high_risk_files": risk,
-        })
-
-    # ── Timeline ─────────────────────────────────────────────────────────
+        return _json(
+            {
+                "report_version": "2.1",
+                "scan_summary": summary.model_dump() if summary else None,
+                "domain_stats": [item.model_dump() for item in db.get_domain_stats(sid)],
+                "recommendations": [item.model_dump() for item in db.get_recommendations(sid)],
+                "high_risk_files": [],
+                "stages": db.get_scan_stages(sid),
+            }
+        )
 
     @app.get("/api/timeline")
     async def timeline() -> JSONResponse:
-        """Get scan history for timeline view."""
-        scans = db.list_scans(limit=20)
-        return JSONResponse({
-            "scans": [s.model_dump() for s in scans],
-        })
-
-    # ── Health ───────────────────────────────────────────────────────────
+        return _json({"scans": [scan.model_dump() for scan in db.list_scans(limit=20)]})
 
     @app.get("/health")
     async def health() -> JSONResponse:
-        """Health check. Reports degraded (still 200) on db errors."""
         try:
             scans = db.list_scans(limit=1)
-        except Exception as e:
-            logger.opt(exception=e).error("Health check db access failed")
-            return JSONResponse({
-                "status": "degraded",
-                "error": f"{type(e).__name__}: {str(e)[:120]}",
-            })
-        return JSONResponse({
-            "status": "healthy",
-            "version": "2.0.0",
-            "db_path": str(db.db_path),
-            "total_scans": len(scans),
-            "latest_scan": scans[0].model_dump() if scans else None,
-        })
-
-    # ── WebSocket ────────────────────────────────────────────────────────
+            total_scans = db.count_scans()
+            latest = scans[0] if scans else None
+            database_state = "healthy"
+        except Exception as exc:
+            logger.opt(exception=exc).error("Health check database access failed")
+            return _json(
+                {
+                    "status": "degraded",
+                    "version": "2.1.0",
+                    "subsystems": {"database": "failed", "api": "healthy"},
+                    "error": "database_unavailable",
+                }
+            )
+        active = [scan_id for scan_id, task in active_tasks.items() if not task.done()]
+        latest_status = latest.status if latest else "none"
+        status = "degraded" if latest_status in {"failed", "degraded"} else "healthy"
+        return _json(
+            {
+                "status": status,
+                "version": "2.1.0",
+                "database": db.db_path.name,
+                "total_scans": total_scans,
+                "latest_scan": latest.model_dump() if latest else None,
+                "active_scan_ids": active,
+                "subsystems": {
+                    "api": "healthy",
+                    "database": database_state,
+                    "scanner": "busy" if active else "idle",
+                    "classification_engine": "configured"
+                    if os.environ.get("DRIVESCAN_ENGINE_URL")
+                    else "not_configured",
+                    "file_actions": "enabled"
+                    if os.environ.get("DRIVESCAN_ALLOW_FILE_ACTIONS") == "1"
+                    else "disabled",
+                },
+            }
+        )
 
     @app.websocket("/api/ws/scan")
-    async def ws_scan_progress(ws: WebSocket) -> None:
-        """WebSocket for real-time scan progress updates."""
-        await ws_manager.connect(ws)
+    async def ws_scan_progress(websocket: WebSocket) -> None:
+        if enforce and not authorized_client(
+            websocket.client.host if websocket.client else None,
+            _token_from_headers(websocket.headers),
+        ):
+            await websocket.close(code=4403, reason="access denied")
+            return
+        await ws_manager.connect(websocket)
         try:
             while True:
-                # Keep connection alive, receive any client messages
-                data = await ws.receive_text()
+                data = await websocket.receive_text()
                 if data == "ping":
-                    await ws.send_json({"type": "pong"})
+                    await websocket.send_json({"api_version": API_VERSION, "type": "pong"})
         except WebSocketDisconnect:
-            ws_manager.disconnect(ws)
+            ws_manager.disconnect(websocket)
 
     return app
 
 
-# ASGI entry point: `uvicorn dashboard.server:app --port 8460`.
-# Import-time work is limited to building the app and opening the sqlite db.
 app = create_app()

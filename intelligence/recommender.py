@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -33,7 +33,7 @@ from storage.models import (
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _human_size(nbytes: int) -> str:
@@ -73,25 +73,27 @@ def _gen_archive_recommendations(
 
     if candidates:
         affected_ids = [str(f.id or 0) for f in candidates[:500]]
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.ARCHIVE.value,
-            severity=Severity.LOW.value,
-            title=f"Archive {len(candidates)} stale files ({_human_size(total_bytes)})",
-            description=(
-                f"Found {len(candidates)} files with staleness score >= {stale_threshold} "
-                f"and importance <= {importance_max}. These files haven't been accessed "
-                f"or modified in a long time and have low business value. Archiving them "
-                f"to cold storage would recover {_human_size(total_bytes)} of active disk space."
-            ),
-            affected_files=json.dumps(affected_ids),
-            affected_count=len(candidates),
-            estimated_impact=f"Recover {_human_size(total_bytes)} disk space",
-            action_command=f"python scanner.py --execute-recommendation archive --scan-id {scan_id}",
-            auto_executable=True,
-            requires_review=False,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.ARCHIVE.value,
+                severity=Severity.LOW.value,
+                title=f"Archive {len(candidates)} stale files ({_human_size(total_bytes)})",
+                description=(
+                    f"Found {len(candidates)} files with staleness score >= {stale_threshold} "
+                    f"and importance <= {importance_max}. These files haven't been accessed "
+                    f"or modified in a long time and have low business value. Archiving them "
+                    f"to cold storage would recover {_human_size(total_bytes)} of active disk space."
+                ),
+                affected_files=json.dumps(affected_ids),
+                affected_count=len(candidates),
+                estimated_impact=f"Recover {_human_size(total_bytes)} disk space",
+                action_command=f"python scanner.py --execute-recommendation archive --scan-id {scan_id}",
+                auto_executable=True,
+                requires_review=False,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -108,25 +110,27 @@ def _gen_delete_recommendations(
 
     if clusters:
         total_files = sum(max(0, c.file_count - 1) for c in clusters)
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.DELETE.value,
-            severity=Severity.MEDIUM.value,
-            title=f"Delete {total_files} exact duplicates (saving {_human_size(total_wasted)})",
-            description=(
-                f"Found {len(clusters)} duplicate clusters containing "
-                f"{total_files} redundant copies. Each cluster has one recommended "
-                f"keeper (highest quality score). Deleting redundant copies would "
-                f"recover {_human_size(total_wasted)} of disk space."
-            ),
-            affected_files=json.dumps([str(c.id or 0) for c in clusters[:200]]),
-            affected_count=total_files,
-            estimated_impact=f"Recover {_human_size(total_wasted)} disk space",
-            action_command=f"python scanner.py --execute-recommendation deduplicate --scan-id {scan_id}",
-            auto_executable=False,
-            requires_review=True,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.DELETE.value,
+                severity=Severity.MEDIUM.value,
+                title=f"Delete {total_files} exact duplicates (saving {_human_size(total_wasted)})",
+                description=(
+                    f"Found {len(clusters)} duplicate clusters containing "
+                    f"{total_files} redundant copies. Each cluster has one recommended "
+                    f"keeper (highest quality score). Deleting redundant copies would "
+                    f"recover {_human_size(total_wasted)} of disk space."
+                ),
+                affected_files=json.dumps([str(c.id or 0) for c in clusters[:200]]),
+                affected_count=total_files,
+                estimated_impact=f"Recover {_human_size(total_wasted)} disk space",
+                action_command=f"python scanner.py --execute-recommendation deduplicate --scan-id {scan_id}",
+                auto_executable=False,
+                requires_review=True,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -149,33 +153,34 @@ def _gen_secure_recommendations(
         if score.sensitivity_score >= sensitivity_threshold:
             path_lower = f.path.lower()
             in_secure = any(
-                kw in path_lower
-                for kw in ("vault", "secure", "encrypted", "prometheus", "private")
+                kw in path_lower for kw in ("vault", "secure", "encrypted", "prometheus", "private")
             )
             if not in_secure:
                 candidates.append(f)
 
     if candidates:
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.SECURE.value,
-            severity=Severity.HIGH.value,
-            title=f"{len(candidates)} files contain PII/PHI — move to encrypted vault",
-            description=(
-                f"Found {len(candidates)} files with sensitivity score >= "
-                f"{sensitivity_threshold} that are NOT in an encrypted or secure "
-                f"location. These files may contain SSNs, credit card numbers, "
-                f"API keys, medical records, or other sensitive data. Move them "
-                f"to the encrypted vault or apply file-level encryption."
-            ),
-            affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
-            affected_count=len(candidates),
-            estimated_impact=f"Protect {len(candidates)} sensitive files from exposure",
-            action_command=f"python scanner.py --execute-recommendation secure --scan-id {scan_id}",
-            auto_executable=False,
-            requires_review=True,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.SECURE.value,
+                severity=Severity.HIGH.value,
+                title=f"{len(candidates)} files contain PII/PHI — move to encrypted vault",
+                description=(
+                    f"Found {len(candidates)} files with sensitivity score >= "
+                    f"{sensitivity_threshold} that are NOT in an encrypted or secure "
+                    f"location. These files may contain SSNs, credit card numbers, "
+                    f"API keys, medical records, or other sensitive data. Move them "
+                    f"to the encrypted vault or apply file-level encryption."
+                ),
+                affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
+                affected_count=len(candidates),
+                estimated_impact=f"Protect {len(candidates)} sensitive files from exposure",
+                action_command=f"python scanner.py --execute-recommendation secure --scan-id {scan_id}",
+                auto_executable=False,
+                requires_review=True,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -208,25 +213,27 @@ def _gen_backup_recommendations(
 
     if candidates:
         total_bytes = sum(f.size_bytes for f in candidates)
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.BACKUP.value,
-            severity=Severity.HIGH.value,
-            title=f"{len(candidates)} critical files have no backup — sync to R2",
-            description=(
-                f"Found {len(candidates)} files with importance score >= "
-                f"{importance_threshold} that exist in only one location. "
-                f"These are critical business files with no redundancy. "
-                f"Sync them to R2 cloud storage for disaster recovery."
-            ),
-            affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
-            affected_count=len(candidates),
-            estimated_impact=f"Protect {_human_size(total_bytes)} of critical data",
-            action_command=f"python scanner.py --execute-recommendation backup --scan-id {scan_id}",
-            auto_executable=True,
-            requires_review=False,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.BACKUP.value,
+                severity=Severity.HIGH.value,
+                title=f"{len(candidates)} critical files have no backup — sync to R2",
+                description=(
+                    f"Found {len(candidates)} files with importance score >= "
+                    f"{importance_threshold} that exist in only one location. "
+                    f"These are critical business files with no redundancy. "
+                    f"Sync them to R2 cloud storage for disaster recovery."
+                ),
+                affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
+                affected_count=len(candidates),
+                estimated_impact=f"Protect {_human_size(total_bytes)} of critical data",
+                action_command=f"python scanner.py --execute-recommendation backup --scan-id {scan_id}",
+                auto_executable=True,
+                requires_review=False,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -250,25 +257,27 @@ def _gen_review_recommendations(
             candidates.append(f)
 
     if candidates:
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.REVIEW.value,
-            severity=Severity.HIGH.value,
-            title=f"Review {len(candidates)} high-risk files",
-            description=(
-                f"Found {len(candidates)} files with risk score >= {risk_threshold}. "
-                f"These may include executables in temp directories, exposed API keys, "
-                f"sensitive data in shared folders, or files matching security threat "
-                f"patterns. Manual review is recommended."
-            ),
-            affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
-            affected_count=len(candidates),
-            estimated_impact=f"Mitigate security risk for {len(candidates)} files",
-            action_command=f"python scanner.py --execute-recommendation review --scan-id {scan_id}",
-            auto_executable=False,
-            requires_review=True,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.REVIEW.value,
+                severity=Severity.HIGH.value,
+                title=f"Review {len(candidates)} high-risk files",
+                description=(
+                    f"Found {len(candidates)} files with risk score >= {risk_threshold}. "
+                    f"These may include executables in temp directories, exposed API keys, "
+                    f"sensitive data in shared folders, or files matching security threat "
+                    f"patterns. Manual review is recommended."
+                ),
+                affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
+                affected_count=len(candidates),
+                estimated_impact=f"Mitigate security risk for {len(candidates)} files",
+                action_command=f"python scanner.py --execute-recommendation review --scan-id {scan_id}",
+                auto_executable=False,
+                requires_review=True,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -291,25 +300,27 @@ def _gen_alert_recommendations(
             candidates.append(f)
 
     if candidates:
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.ALERT.value,
-            severity=Severity.CRITICAL.value,
-            title=f"{len(candidates)} files match security threat patterns — investigate",
-            description=(
-                f"Found {len(candidates)} files classified by CYBER engines "
-                f"with score >= {alert_score_min}. These may match malware "
-                f"persistence patterns, exploit kits, suspicious scripts, "
-                f"or unauthorized access tools. Immediate investigation recommended."
-            ),
-            affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
-            affected_count=len(candidates),
-            estimated_impact="Potential security breach — immediate investigation needed",
-            action_command=f"python scanner.py --execute-recommendation alert --scan-id {scan_id}",
-            auto_executable=False,
-            requires_review=True,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.ALERT.value,
+                severity=Severity.CRITICAL.value,
+                title=f"{len(candidates)} files match security threat patterns — investigate",
+                description=(
+                    f"Found {len(candidates)} files classified by CYBER engines "
+                    f"with score >= {alert_score_min}. These may match malware "
+                    f"persistence patterns, exploit kits, suspicious scripts, "
+                    f"or unauthorized access tools. Immediate investigation recommended."
+                ),
+                affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
+                affected_count=len(candidates),
+                estimated_impact="Potential security breach — immediate investigation needed",
+                action_command=f"python scanner.py --execute-recommendation alert --scan-id {scan_id}",
+                auto_executable=False,
+                requires_review=True,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -337,25 +348,27 @@ def _gen_encrypt_recommendations(
             candidates.append(f)
 
     if candidates:
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.ENCRYPT.value,
-            severity=Severity.HIGH.value,
-            title=f"Encrypt {len(candidates)} highly sensitive files",
-            description=(
-                f"Found {len(candidates)} files with sensitivity score >= "
-                f"{sensitivity_threshold} that are not encrypted. These contain "
-                f"highly sensitive data (financial records, credentials, PII) "
-                f"and should be encrypted at rest."
-            ),
-            affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
-            affected_count=len(candidates),
-            estimated_impact=f"Protect {len(candidates)} files with encryption",
-            action_command=f"python scanner.py --execute-recommendation encrypt --scan-id {scan_id}",
-            auto_executable=False,
-            requires_review=True,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.ENCRYPT.value,
+                severity=Severity.HIGH.value,
+                title=f"Encrypt {len(candidates)} highly sensitive files",
+                description=(
+                    f"Found {len(candidates)} files with sensitivity score >= "
+                    f"{sensitivity_threshold} that are not encrypted. These contain "
+                    f"highly sensitive data (financial records, credentials, PII) "
+                    f"and should be encrypted at rest."
+                ),
+                affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
+                affected_count=len(candidates),
+                estimated_impact=f"Protect {len(candidates)} files with encryption",
+                action_command=f"python scanner.py --execute-recommendation encrypt --scan-id {scan_id}",
+                auto_executable=False,
+                requires_review=True,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -400,27 +413,32 @@ def _gen_organize_recommendations(
         domain_counts: dict[str, int] = defaultdict(int)
         for _, domain in misplaced:
             domain_counts[domain] += 1
-        detail_parts = [f"{count} {domain}" for domain, count in sorted(domain_counts.items(), key=lambda x: -x[1])[:5]]
+        detail_parts = [
+            f"{count} {domain}"
+            for domain, count in sorted(domain_counts.items(), key=lambda x: -x[1])[:5]
+        ]
         detail = ", ".join(detail_parts)
 
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.ORGANIZE.value,
-            severity=Severity.LOW.value,
-            title=f"Move {len(misplaced)} files from temporary locations to proper folders",
-            description=(
-                f"Found {len(misplaced)} classified files in Downloads, Desktop, or "
-                f"Temp directories. These should be moved to their proper domain "
-                f"folders for better organization. Breakdown: {detail}."
-            ),
-            affected_files=json.dumps([str(f.id or 0) for f, _ in misplaced[:500]]),
-            affected_count=len(misplaced),
-            estimated_impact=f"Organize {len(misplaced)} files into correct locations",
-            action_command=f"python scanner.py --execute-recommendation organize --scan-id {scan_id}",
-            auto_executable=False,
-            requires_review=True,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.ORGANIZE.value,
+                severity=Severity.LOW.value,
+                title=f"Move {len(misplaced)} files from temporary locations to proper folders",
+                description=(
+                    f"Found {len(misplaced)} classified files in Downloads, Desktop, or "
+                    f"Temp directories. These should be moved to their proper domain "
+                    f"folders for better organization. Breakdown: {detail}."
+                ),
+                affected_files=json.dumps([str(f.id or 0) for f, _ in misplaced[:500]]),
+                affected_count=len(misplaced),
+                estimated_impact=f"Organize {len(misplaced)} files into correct locations",
+                action_command=f"python scanner.py --execute-recommendation organize --scan-id {scan_id}",
+                auto_executable=False,
+                requires_review=True,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -445,25 +463,27 @@ def _gen_update_recommendations(
             candidates.append(f)
 
     if candidates:
-        recs.append(Recommendation(
-            scan_id=scan_id,
-            category=RecommendationCategory.UPDATE.value,
-            severity=Severity.MEDIUM.value,
-            title=f"{len(candidates)} important documents need updating",
-            description=(
-                f"Found {len(candidates)} files with importance >= {importance_min} "
-                f"and staleness >= {staleness_min}. These are business-critical "
-                f"documents that haven't been updated in a while and may contain "
-                f"outdated information."
-            ),
-            affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
-            affected_count=len(candidates),
-            estimated_impact=f"Keep {len(candidates)} critical documents current",
-            action_command=f"python scanner.py --execute-recommendation update --scan-id {scan_id}",
-            auto_executable=False,
-            requires_review=True,
-            created_at=_now_iso(),
-        ))
+        recs.append(
+            Recommendation(
+                scan_id=scan_id,
+                category=RecommendationCategory.UPDATE.value,
+                severity=Severity.MEDIUM.value,
+                title=f"{len(candidates)} important documents need updating",
+                description=(
+                    f"Found {len(candidates)} files with importance >= {importance_min} "
+                    f"and staleness >= {staleness_min}. These are business-critical "
+                    f"documents that haven't been updated in a while and may contain "
+                    f"outdated information."
+                ),
+                affected_files=json.dumps([str(f.id or 0) for f in candidates[:500]]),
+                affected_count=len(candidates),
+                estimated_impact=f"Keep {len(candidates)} critical documents current",
+                action_command=f"python scanner.py --execute-recommendation update --scan-id {scan_id}",
+                auto_executable=False,
+                requires_review=True,
+                created_at=_now_iso(),
+            )
+        )
     return recs
 
 
@@ -507,14 +527,30 @@ class RecommendationEngine:
         logger.info("Generating recommendations for {} files", len(files))
 
         generators = [
-            ("alert", _gen_alert_recommendations, (files, classifications, scan_id, self.thresholds)),
+            (
+                "alert",
+                _gen_alert_recommendations,
+                (files, classifications, scan_id, self.thresholds),
+            ),
             ("secure", _gen_secure_recommendations, (files, scores, scan_id, self.thresholds)),
             ("encrypt", _gen_encrypt_recommendations, (files, scores, scan_id, self.thresholds)),
             ("review", _gen_review_recommendations, (files, scores, scan_id, self.thresholds)),
-            ("delete", _gen_delete_recommendations, (files, scores, clusters, scan_id, self.thresholds)),
-            ("backup", _gen_backup_recommendations, (files, scores, relationships, scan_id, self.thresholds)),
+            (
+                "delete",
+                _gen_delete_recommendations,
+                (files, scores, clusters, scan_id, self.thresholds),
+            ),
+            (
+                "backup",
+                _gen_backup_recommendations,
+                (files, scores, relationships, scan_id, self.thresholds),
+            ),
             ("archive", _gen_archive_recommendations, (files, scores, scan_id, self.thresholds)),
-            ("organize", _gen_organize_recommendations, (files, scores, classifications, scan_id, self.thresholds)),
+            (
+                "organize",
+                _gen_organize_recommendations,
+                (files, scores, classifications, scan_id, self.thresholds),
+            ),
             ("update", _gen_update_recommendations, (files, scores, scan_id, self.thresholds)),
         ]
 

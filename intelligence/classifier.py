@@ -9,9 +9,8 @@ Routes each file through the optimal engine(s) based on a 3-tier strategy:
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -31,7 +30,6 @@ from storage.models import (
     Classification,
     ClassificationResult,
     ClassificationTier,
-    ConfidenceLevel,
     EngineResult,
     FileRecord,
     FileSample,
@@ -40,36 +38,92 @@ from storage.models import (
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ── Priority Scoring ─────────────────────────────────────────────────────────
 
 PRIORITY_EXTENSIONS: dict[str, int] = {
     **{ext: 100 for ext in EXECUTABLE_EXTENSIONS},
-    ".xlsx": 80, ".xls": 80, ".csv": 70,
-    ".pdf": 75, ".docx": 70, ".doc": 70,
-    ".py": 60, ".js": 55, ".ts": 55, ".go": 55, ".rs": 55,
-    ".sol": 90, ".asm": 85,
-    ".sql": 65, ".db": 60, ".sqlite": 60,
-    ".env": 95, ".pem": 95, ".key": 95,
-    ".json": 50, ".yaml": 50, ".yml": 50, ".toml": 50,
+    ".xlsx": 80,
+    ".xls": 80,
+    ".csv": 70,
+    ".pdf": 75,
+    ".docx": 70,
+    ".doc": 70,
+    ".py": 60,
+    ".js": 55,
+    ".ts": 55,
+    ".go": 55,
+    ".rs": 55,
+    ".sol": 90,
+    ".asm": 85,
+    ".sql": 65,
+    ".db": 60,
+    ".sqlite": 60,
+    ".env": 95,
+    ".pem": 95,
+    ".key": 95,
+    ".json": 50,
+    ".yaml": 50,
+    ".yml": 50,
+    ".toml": 50,
 }
 
 PRIORITY_PATH_KEYWORDS: dict[str, int] = {
-    "secret": 100, "credential": 100, "password": 100, "private": 95,
-    "finance": 85, "accounting": 85, "legal": 80, "contract": 80,
-    "security": 90, "cyber": 90, "malware": 95,
-    "medical": 85, "patient": 90, "hipaa": 90,
-    "tax": 80, "irs": 80,
+    "secret": 100,
+    "credential": 100,
+    "password": 100,
+    "private": 95,
+    "finance": 85,
+    "accounting": 85,
+    "legal": 80,
+    "contract": 80,
+    "security": 90,
+    "cyber": 90,
+    "malware": 95,
+    "medical": 85,
+    "patient": 90,
+    "hipaa": 90,
+    "tax": 80,
+    "irs": 80,
 }
 
-FINANCIAL_KEYWORDS = {"invoice", "revenue", "balance", "ledger", "audit",
-                      "expense", "depreciat", "asset", "liability", "equity"}
-LEGAL_KEYWORDS = {"contract", "agreement", "clause", "indemnif", "warranty",
-                  "litigation", "settlement", "arbitrat", "damages"}
-SECURITY_KEYWORDS = {"vulnerability", "exploit", "malware", "trojan", "backdoor",
-                     "privilege", "escalat", "inject", "overflow", "payload"}
+FINANCIAL_KEYWORDS = {
+    "invoice",
+    "revenue",
+    "balance",
+    "ledger",
+    "audit",
+    "expense",
+    "depreciat",
+    "asset",
+    "liability",
+    "equity",
+}
+LEGAL_KEYWORDS = {
+    "contract",
+    "agreement",
+    "clause",
+    "indemnif",
+    "warranty",
+    "litigation",
+    "settlement",
+    "arbitrat",
+    "damages",
+}
+SECURITY_KEYWORDS = {
+    "vulnerability",
+    "exploit",
+    "malware",
+    "trojan",
+    "backdoor",
+    "privilege",
+    "escalat",
+    "inject",
+    "overflow",
+    "payload",
+}
 
 
 def compute_file_priority(file: FileRecord | FileSample) -> int:
@@ -104,9 +158,14 @@ def determine_tier(sample: FileSample, file: FileRecord | None = None) -> Classi
     if ext in {".env", ".pem", ".key", ".p12", ".pfx"}:
         return ClassificationTier.TIER3_DEEP
 
-    if sample.detected_domain != "UNKNOWN" and sample.domain_confidence >= TIER2_CONFIDENCE_THRESHOLD:
+    if (
+        sample.detected_domain != "UNKNOWN"
+        and sample.domain_confidence >= TIER2_CONFIDENCE_THRESHOLD
+    ):
         is_large_text = sample.size_bytes > TIER3_SIZE_THRESHOLD and not sample.is_binary
-        has_financial = any(kw in (sample.content_sample or "").lower() for kw in FINANCIAL_KEYWORDS)
+        has_financial = any(
+            kw in (sample.content_sample or "").lower() for kw in FINANCIAL_KEYWORDS
+        )
         has_legal = any(kw in (sample.content_sample or "").lower() for kw in LEGAL_KEYWORDS)
         has_security = any(kw in (sample.content_sample or "").lower() for kw in SECURITY_KEYWORDS)
 
@@ -140,7 +199,9 @@ def _build_query_from_sample(sample: FileSample) -> str:
 
 
 def _engine_result_to_classification(
-    result: EngineResult, file_id: int, scan_id: int,
+    result: EngineResult,
+    file_id: int,
+    scan_id: int,
 ) -> Classification:
     """Convert an EngineResult to a Classification record."""
     return Classification(
@@ -181,7 +242,10 @@ class ClassificationPipeline:
         }
 
     async def classify_file(
-        self, sample: FileSample, file_id: int, scan_id: int,
+        self,
+        sample: FileSample,
+        file_id: int,
+        scan_id: int,
     ) -> ClassificationResult:
         """Classify a single file through the appropriate tier."""
         tier = determine_tier(sample)
@@ -212,7 +276,11 @@ class ClassificationPipeline:
         return result
 
     async def _tier1_classify(
-        self, sample: FileSample, query: str, file_id: int, scan_id: int,
+        self,
+        sample: FileSample,
+        query: str,
+        file_id: int,
+        scan_id: int,
     ) -> ClassificationResult:
         """Tier 1: Single domain query in FAST mode."""
         self.stats["tier1_count"] += 1
@@ -246,7 +314,11 @@ class ClassificationPipeline:
         )
 
     async def _tier2_classify(
-        self, sample: FileSample, query: str, file_id: int, scan_id: int,
+        self,
+        sample: FileSample,
+        query: str,
+        file_id: int,
+        scan_id: int,
     ) -> ClassificationResult:
         """Tier 2: Cross-domain discovery + targeted queries to top 3 domains."""
         self.stats["tier2_count"] += 1
@@ -301,7 +373,11 @@ class ClassificationPipeline:
         )
 
     async def _tier3_classify(
-        self, sample: FileSample, query: str, file_id: int, scan_id: int,
+        self,
+        sample: FileSample,
+        query: str,
+        file_id: int,
+        scan_id: int,
     ) -> ClassificationResult:
         """Tier 3: Deep analysis with MEMO mode + full reasoning."""
         self.stats["tier3_count"] += 1
@@ -357,7 +433,8 @@ class ClassificationPipeline:
         )
 
     async def classify_batch(
-        self, samples: list[tuple[FileSample, int]],
+        self,
+        samples: list[tuple[FileSample, int]],
         scan_id: int,
     ) -> list[ClassificationResult]:
         """Classify a batch of files with tiered concurrency.
@@ -384,7 +461,9 @@ class ClassificationPipeline:
 
         logger.info(
             "Batch classification: {} Tier1, {} Tier2, {} Tier3",
-            len(tier1_items), len(tier2_items), len(tier3_items),
+            len(tier1_items),
+            len(tier2_items),
+            len(tier3_items),
         )
 
         results: list[ClassificationResult] = []
@@ -394,7 +473,9 @@ class ClassificationPipeline:
         sem3 = asyncio.Semaphore(TIER3_CONCURRENCY)
 
         async def _classify_with_sem(
-            sem: asyncio.Semaphore, sample: FileSample, file_id: int,
+            sem: asyncio.Semaphore,
+            sample: FileSample,
+            file_id: int,
         ) -> ClassificationResult:
             async with sem:
                 return await self.classify_file(sample, file_id, scan_id)
@@ -406,7 +487,7 @@ class ClassificationPipeline:
         all_tasks = tier1_tasks + tier2_tasks + tier3_tasks
 
         for chunk_start in range(0, len(all_tasks), BATCH_SIZE * CONCURRENT_BATCHES):
-            chunk = all_tasks[chunk_start:chunk_start + BATCH_SIZE * CONCURRENT_BATCHES]
+            chunk = all_tasks[chunk_start : chunk_start + BATCH_SIZE * CONCURRENT_BATCHES]
             chunk_results = await asyncio.gather(*chunk, return_exceptions=True)
             for cr in chunk_results:
                 if isinstance(cr, Exception):
@@ -418,7 +499,8 @@ class ClassificationPipeline:
         return results
 
     async def classify_batch_sorted(
-        self, samples: list[tuple[FileSample, int]],
+        self,
+        samples: list[tuple[FileSample, int]],
         scan_id: int,
     ) -> list[ClassificationResult]:
         """Classify a batch sorted by priority (highest priority first)."""

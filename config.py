@@ -147,8 +147,8 @@ FALLBACK_KEEPER_STRATEGIES = ["keep_newest", "keep_shallowest"]
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
 
-DASHBOARD_HOST = "127.0.0.1"
-DASHBOARD_PORT = 8460
+DASHBOARD_HOST = os.environ.get("DRIVESCAN_HOST", "127.0.0.1")
+DASHBOARD_PORT = int(os.environ.get("DRIVESCAN_PORT", "8460"))
 
 # ── Scan Profiles ────────────────────────────────────────────────────────────
 
@@ -322,32 +322,151 @@ EXTENSION_MIME: dict[str, str] = {
 }
 
 TEXT_EXTENSIONS = {
-    ".txt", ".md", ".log", ".csv", ".json", ".xml", ".html", ".htm",
-    ".css", ".js", ".ts", ".tsx", ".jsx", ".py", ".go", ".rs", ".java",
-    ".cpp", ".c", ".h", ".cs", ".rb", ".php", ".sh", ".ps1", ".bat",
-    ".cmd", ".sql", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env",
-    ".r", ".m", ".swift", ".kt", ".lua", ".pl", ".pm", ".tcl", ".awk",
-    ".sed", ".makefile", ".cmake", ".gradle", ".sbt", ".cabal",
-    ".nix", ".tf", ".hcl", ".dockerfile", ".gitignore", ".editorconfig",
-    ".eslintrc", ".prettierrc", ".babelrc", ".svg", ".mdx", ".rst",
-    ".tex", ".bib", ".properties", ".conf", ".reg", ".vbs",
+    ".txt",
+    ".md",
+    ".log",
+    ".csv",
+    ".json",
+    ".xml",
+    ".html",
+    ".htm",
+    ".css",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".py",
+    ".go",
+    ".rs",
+    ".java",
+    ".cpp",
+    ".c",
+    ".h",
+    ".cs",
+    ".rb",
+    ".php",
+    ".sh",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".sql",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".env",
+    ".r",
+    ".m",
+    ".swift",
+    ".kt",
+    ".lua",
+    ".pl",
+    ".pm",
+    ".tcl",
+    ".awk",
+    ".sed",
+    ".makefile",
+    ".cmake",
+    ".gradle",
+    ".sbt",
+    ".cabal",
+    ".nix",
+    ".tf",
+    ".hcl",
+    ".dockerfile",
+    ".gitignore",
+    ".editorconfig",
+    ".eslintrc",
+    ".prettierrc",
+    ".babelrc",
+    ".svg",
+    ".mdx",
+    ".rst",
+    ".tex",
+    ".bib",
+    ".properties",
+    ".conf",
+    ".reg",
+    ".vbs",
 }
 
 EXECUTABLE_EXTENSIONS = {
-    ".exe", ".dll", ".bat", ".cmd", ".ps1", ".vbs", ".wsf", ".msi",
-    ".com", ".scr", ".pif", ".hta", ".cpl", ".jar", ".sh",
+    ".exe",
+    ".dll",
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".vbs",
+    ".wsf",
+    ".msi",
+    ".com",
+    ".scr",
+    ".pif",
+    ".hta",
+    ".cpl",
+    ".jar",
+    ".sh",
 }
 
 BINARY_EXTENSIONS = {
-    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".tiff",
-    ".mp3", ".wav", ".flac", ".ogg", ".aac", ".wma", ".m4a",
-    ".mp4", ".avi", ".mkv", ".webm", ".mov", ".wmv", ".flv",
-    ".exe", ".dll", ".so", ".msi", ".bin", ".dat", ".iso",
-    ".zip", ".tar", ".gz", ".7z", ".rar", ".bz2", ".xz",
-    ".db", ".sqlite", ".sqlite3", ".mdb", ".accdb",
-    ".psd", ".ai", ".sketch", ".fig",
-    ".ttf", ".otf", ".woff", ".woff2", ".eot",
-    ".pyc", ".pyo", ".class", ".o", ".obj", ".lib", ".a",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".ico",
+    ".webp",
+    ".tiff",
+    ".mp3",
+    ".wav",
+    ".flac",
+    ".ogg",
+    ".aac",
+    ".wma",
+    ".m4a",
+    ".mp4",
+    ".avi",
+    ".mkv",
+    ".webm",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".exe",
+    ".dll",
+    ".so",
+    ".msi",
+    ".bin",
+    ".dat",
+    ".iso",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".7z",
+    ".rar",
+    ".bz2",
+    ".xz",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".mdb",
+    ".accdb",
+    ".psd",
+    ".ai",
+    ".sketch",
+    ".fig",
+    ".ttf",
+    ".otf",
+    ".woff",
+    ".woff2",
+    ".eot",
+    ".pyc",
+    ".pyo",
+    ".class",
+    ".o",
+    ".obj",
+    ".lib",
+    ".a",
     ".wasm",
 }
 
@@ -485,32 +604,42 @@ RECOMMENDATION_THRESHOLDS: dict[str, float] = {
 }
 
 # ── Performance Tuning ─────────────────────────────────────────────────────
-STREAMING_BATCH_SIZE = 2000         # Files per streaming batch (memory vs speed)
-PARALLEL_SAMPLE_WORKERS = 32       # ThreadPool workers for parallel file sampling
-MIN_DISK_SPACE_GB = 5.0            # Minimum free GB on DB drive before aborting
-CHANGE_DETECTION_ENABLED = True    # Skip re-scanning unchanged files
-PRIORITY_DIRS = [                  # Scan these dirs first for fast intelligence
-    "ECHO_OMEGA_PRIME", "SYSTEMS", "WORKERS", "CORE", "_CLAUDE",
-    "ECHO_X", "ECHO_PRIME", "SPI_GODCORE",
+STREAMING_BATCH_SIZE = 2000  # Files per streaming batch (memory vs speed)
+PARALLEL_SAMPLE_WORKERS = 32  # ThreadPool workers for parallel file sampling
+MIN_DISK_SPACE_GB = 5.0  # Minimum free GB on DB drive before aborting
+CHANGE_DETECTION_ENABLED = True  # Skip re-scanning unchanged files
+PRIORITY_DIRS = [  # Scan these dirs first for fast intelligence
+    "ECHO_OMEGA_PRIME",
+    "SYSTEMS",
+    "WORKERS",
+    "CORE",
+    "_CLAUDE",
+    "ECHO_X",
+    "ECHO_PRIME",
+    "SPI_GODCORE",
 ]
 
 # ── Library Extraction ─────────────────────────────────────────────────────
 LIBRARY_EXTRACTION_ENABLED = True  # Extract function/pattern/schema libraries
-LIBRARY_CODE_EXTENSIONS = {        # Extensions to extract libraries from
-    ".py", ".js", ".ts", ".jsx", ".tsx"
+LIBRARY_CODE_EXTENSIONS = {  # Extensions to extract libraries from
+    ".py",
+    ".js",
+    ".ts",
+    ".jsx",
+    ".tsx",
 }
-SENSITIVE_SCAN_ENABLED = True      # Scan for secrets/credentials in all files
-SECRET_ALERT_THRESHOLD = 1         # Alert immediately on any secret found
+SENSITIVE_SCAN_ENABLED = True  # Scan for secrets/credentials in all files
+SECRET_ALERT_THRESHOLD = 1  # Alert immediately on any secret found
 
 # ── Worker Sync ────────────────────────────────────────────────────────────
 # Off by default: opt in with DRIVESCAN_WORKER_SYNC=1 (also requires
 # DRIVESCAN_WORKER_URL and an API key, or the push is skipped).
 WORKER_SYNC_ENABLED = os.environ.get("DRIVESCAN_WORKER_SYNC", "0") == "1"
-WORKER_PUSH_BATCH_SIZE = 500       # Files per push batch to worker
+WORKER_PUSH_BATCH_SIZE = 500  # Files per push batch to worker
 
 # ── DB Maintenance ─────────────────────────────────────────────────────────
-DB_MAX_SIZE_GB = 10.0              # Warn when DB exceeds this size
-DB_KEEP_SCANS = 3                  # Keep N most recent scans per drive, archive rest
+DB_MAX_SIZE_GB = 10.0  # Warn when DB exceeds this size
+DB_KEEP_SCANS = 3  # Keep N most recent scans per drive, archive rest
 
 
 # ── Path Scope Controls (SAFETY-CRITICAL) ──────────────────────────────────
@@ -535,7 +664,13 @@ PROTECTED_PATHS: list[str] = [
     "$Recycle.Bin",
     "System Volume Information",
     # POSIX system locations
-    "/etc", "/sys", "/proc", "/dev", "/boot", "/usr/lib", "/var/lib",
+    "/etc",
+    "/sys",
+    "/proc",
+    "/dev",
+    "/boot",
+    "/usr/lib",
+    "/var/lib",
     # Placeholder: replace with the root of your personal-data tree(s),
     # e.g. r"C:\Users\you\PersonalData". Kept inert until edited.
     "__PERSONAL_DATA_TREE_PLACEHOLDER__",

@@ -1,0 +1,8 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m pip_audit -r requirements.txt --progress-spinner off
+RETURN_CODE: 0
+
+STDOUT:
+
+
+STDERR:
+No known vulnerabilities found

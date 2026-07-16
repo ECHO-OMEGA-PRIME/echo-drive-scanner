@@ -1,6 +1,6 @@
 """Tests for relationship mapping module."""
 
-from intelligence.relationship_mapper import RelationshipMapper, VERSION_PATTERNS
+from intelligence.relationship_mapper import VERSION_PATTERNS, RelationshipMapper
 from storage.models import Classification, FileRecord, RelationshipType
 
 
@@ -103,7 +103,9 @@ def test_version_patterns():
     ]
     for filename, should_match in test_cases:
         matched = any(p.match(filename) for p in VERSION_PATTERNS)
-        assert matched == should_match, f"Pattern match failed for {filename}: expected {should_match}"
+        assert matched == should_match, (
+            f"Pattern match failed for {filename}: expected {should_match}"
+        )
 
 
 def test_stats():

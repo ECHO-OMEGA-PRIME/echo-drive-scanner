@@ -1,0 +1,7 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m compileall -q config.py scanner.py dashboard intelligence storage
+RETURN_CODE: 0
+
+STDOUT:
+
+
+STDERR:

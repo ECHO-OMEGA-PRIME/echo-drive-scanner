@@ -1,0 +1,7 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m ruff check . --exclude .venv
+RETURN_CODE: 0
+
+STDOUT:
+All checks passed!
+
+STDERR:

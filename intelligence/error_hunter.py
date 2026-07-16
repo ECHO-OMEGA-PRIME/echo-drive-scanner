@@ -7,20 +7,17 @@ Deduplicates against existing GS343 templates. Submits new patterns.
 
 from __future__ import annotations
 
-import json
+# ─── Config ──────────────────────────────────────────────────────────────────
+import os
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 from loguru import logger
 from pydantic import BaseModel, Field
-
-# ─── Config ──────────────────────────────────────────────────────────────────
-
-import os
 
 GS343_URL = os.environ.get("DRIVESCAN_GS343_URL", "")
 SHARED_BRAIN_URL = os.environ.get("DRIVESCAN_SHARED_BRAIN_URL", "")
@@ -38,9 +35,7 @@ PYTHON_TRACEBACK = re.compile(
     re.MULTILINE,
 )
 
-PYTHON_EXCEPTION_LINE = re.compile(
-    r"(?:raise\s+)?(\w+(?:Error|Exception|Warning))\s*\(([^)]*)\)"
-)
+PYTHON_EXCEPTION_LINE = re.compile(r"(?:raise\s+)?(\w+(?:Error|Exception|Warning))\s*\(([^)]*)\)")
 
 PYTHON_EXCEPT_BLOCK = re.compile(
     r"except\s+(\w+(?:Error|Exception)?(?:\s*,\s*\w+(?:Error|Exception)?)*)\s*(?:as\s+\w+)?\s*:"
@@ -67,6 +62,7 @@ HTTP_ERROR = re.compile(
 
 
 # ─── Models ──────────────────────────────────────────────────────────────────
+
 
 class ErrorPattern(BaseModel):
     error_type: str
@@ -102,6 +98,7 @@ class ErrorHuntResult(BaseModel):
 
 # ─── Error Hunter ────────────────────────────────────────────────────────────
 
+
 class ErrorHunter:
     """Scan files for error patterns and submit to GS343."""
 
@@ -117,10 +114,7 @@ class ErrorHunter:
         await self._load_existing_templates()
 
         files = self.db.list_files(scan_id=scan_id, limit=max_files * 2)
-        target_files = [
-            f for f in files
-            if self._is_scannable(f)
-        ][:max_files]
+        target_files = [f for f in files if self._is_scannable(f)][:max_files]
 
         logger.info(f"Error hunting across {len(target_files)} files from scan {scan_id}")
 
@@ -141,7 +135,7 @@ class ErrorHunter:
             fingerprint_groups[p.fingerprint].append(p)
 
         deduped: list[ErrorPattern] = []
-        for fp, group in fingerprint_groups.items():
+        for _fp, group in fingerprint_groups.items():
             representative = group[0]
             representative.frequency = len(group)
             deduped.append(representative)
@@ -214,36 +208,42 @@ class ErrorHunter:
 
         # Full tracebacks
         for m in PYTHON_TRACEBACK.finditer(content):
-            patterns.append(ErrorPattern(
-                error_type=m.group(1),
-                message=m.group(2).strip()[:500],
-                source_file=path,
-                severity=self._classify_severity(m.group(1)),
-                category="traceback",
-            ))
+            patterns.append(
+                ErrorPattern(
+                    error_type=m.group(1),
+                    message=m.group(2).strip()[:500],
+                    source_file=path,
+                    severity=self._classify_severity(m.group(1)),
+                    category="traceback",
+                )
+            )
 
         # Raised exceptions
         for m in PYTHON_EXCEPTION_LINE.finditer(content):
-            patterns.append(ErrorPattern(
-                error_type=m.group(1),
-                message=m.group(2).strip().strip("'\"")[:500],
-                source_file=path,
-                severity=self._classify_severity(m.group(1)),
-                category="raised",
-            ))
+            patterns.append(
+                ErrorPattern(
+                    error_type=m.group(1),
+                    message=m.group(2).strip().strip("'\"")[:500],
+                    source_file=path,
+                    severity=self._classify_severity(m.group(1)),
+                    category="raised",
+                )
+            )
 
         # Except blocks (what errors are being caught)
         for m in PYTHON_EXCEPT_BLOCK.finditer(content):
             for exc_type in re.split(r"\s*,\s*", m.group(1)):
                 exc_type = exc_type.strip()
                 if exc_type and exc_type != "Exception":
-                    patterns.append(ErrorPattern(
-                        error_type=exc_type,
-                        message=f"Caught in {Path(path).name}",
-                        source_file=path,
-                        severity="low",
-                        category="handled",
-                    ))
+                    patterns.append(
+                        ErrorPattern(
+                            error_type=exc_type,
+                            message=f"Caught in {Path(path).name}",
+                            source_file=path,
+                            severity="low",
+                            category="handled",
+                        )
+                    )
 
         return patterns
 
@@ -252,23 +252,27 @@ class ErrorHunter:
         patterns: list[ErrorPattern] = []
 
         for m in JS_ERROR_PATTERN.finditer(content):
-            patterns.append(ErrorPattern(
-                error_type=m.group(1),
-                message=m.group(2).strip().strip("'\"")[:500],
-                source_file=path,
-                severity=self._classify_severity(m.group(1)),
-                category="thrown",
-            ))
+            patterns.append(
+                ErrorPattern(
+                    error_type=m.group(1),
+                    message=m.group(2).strip().strip("'\"")[:500],
+                    source_file=path,
+                    severity=self._classify_severity(m.group(1)),
+                    category="thrown",
+                )
+            )
 
         # Console.error calls
         for m in re.finditer(r"console\.error\s*\(\s*['\"`]([^'\"`]+)", content):
-            patterns.append(ErrorPattern(
-                error_type="ConsoleError",
-                message=m.group(1)[:500],
-                source_file=path,
-                severity="low",
-                category="logged",
-            ))
+            patterns.append(
+                ErrorPattern(
+                    error_type="ConsoleError",
+                    message=m.group(1)[:500],
+                    source_file=path,
+                    severity="low",
+                    category="logged",
+                )
+            )
 
         return patterns
 
@@ -280,31 +284,37 @@ class ErrorHunter:
             msg = m.group(1).strip()[:500]
             exc_match = LOG_EXCEPTION.search(msg)
             if exc_match:
-                patterns.append(ErrorPattern(
-                    error_type=exc_match.group(1),
-                    message=exc_match.group(2).strip()[:500],
-                    source_file=path,
-                    severity=self._classify_severity(exc_match.group(1)),
-                    category="log",
-                ))
+                patterns.append(
+                    ErrorPattern(
+                        error_type=exc_match.group(1),
+                        message=exc_match.group(2).strip()[:500],
+                        source_file=path,
+                        severity=self._classify_severity(exc_match.group(1)),
+                        category="log",
+                    )
+                )
             else:
-                patterns.append(ErrorPattern(
-                    error_type="LogError",
-                    message=msg,
-                    source_file=path,
-                    severity="medium",
-                    category="log",
-                ))
+                patterns.append(
+                    ErrorPattern(
+                        error_type="LogError",
+                        message=msg,
+                        source_file=path,
+                        severity="medium",
+                        category="log",
+                    )
+                )
 
         for m in HTTP_ERROR.finditer(content):
             status = int(m.group(1))
-            patterns.append(ErrorPattern(
-                error_type=f"HTTP{status}",
-                message=m.group(2).strip()[:500],
-                source_file=path,
-                severity="high" if status >= 500 else "medium",
-                category="http",
-            ))
+            patterns.append(
+                ErrorPattern(
+                    error_type=f"HTTP{status}",
+                    message=m.group(2).strip()[:500],
+                    source_file=path,
+                    severity="high" if status >= 500 else "medium",
+                    category="http",
+                )
+            )
 
         return patterns
 
@@ -312,8 +322,16 @@ class ErrorHunter:
     def _classify_severity(error_type: str) -> str:
         """Classify error severity based on type name."""
         critical = {"SystemExit", "MemoryError", "RecursionError", "SystemError"}
-        high = {"ConnectionError", "TimeoutError", "PermissionError", "FileNotFoundError",
-                "ImportError", "ModuleNotFoundError", "DatabaseError", "IntegrityError"}
+        high = {
+            "ConnectionError",
+            "TimeoutError",
+            "PermissionError",
+            "FileNotFoundError",
+            "ImportError",
+            "ModuleNotFoundError",
+            "DatabaseError",
+            "IntegrityError",
+        }
         low = {"DeprecationWarning", "FutureWarning", "UserWarning", "SyntaxWarning"}
 
         if error_type in critical:
@@ -334,7 +352,9 @@ class ErrorHunter:
                 resp = await client.get(f"{GS343_URL}/templates")
                 if resp.status_code == 200:
                     templates = resp.json()
-                    for t in templates if isinstance(templates, list) else templates.get("templates", []):
+                    for t in (
+                        templates if isinstance(templates, list) else templates.get("templates", [])
+                    ):
                         error_type = t.get("error_type", "")
                         message = t.get("message_pattern", t.get("message", ""))
                         normalized = re.sub(r"[\d]+", "N", message)
@@ -361,7 +381,7 @@ class ErrorHunter:
                         "frequency": p.frequency,
                         "auto_fix": "",
                         "notes": f"Auto-discovered by scanner from {p.source_file}",
-                        "discovered_at": datetime.now(timezone.utc).isoformat(),
+                        "discovered_at": datetime.now(UTC).isoformat(),
                     }
                     resp = await client.post(f"{GS343_URL}/errors/new", json=payload)
                     if resp.status_code < 300:
