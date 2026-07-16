@@ -10,23 +10,122 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from loguru import logger
 from starlette.requests import Request
 
-from config import DASHBOARD_PORT, ScanConfig
+from config import DASHBOARD_PORT, LOG_DIR, PROJECT_ROOT, ScanConfig, validate_scan_path
 from storage.db import IntelligenceDB
-from storage.models import ScanProgress
+from storage.models import Recommendation, ScanProgress
 
 DASHBOARD_DIR = Path(__file__).resolve().parent
 TEMPLATES_DIR = DASHBOARD_DIR / "templates"
 STATIC_DIR = DASHBOARD_DIR / "static"
+
+# The dashboard page needs d3 from d3js.org, its own static assets, and uses
+# inline <style> / style="" attributes (hence 'unsafe-inline' for styles only).
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self' https://d3js.org; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self' ws: wss:; "
+    "font-src 'self'; "
+    "object-src 'none'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'self'"
+)
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+}
+
+AUDIT_LOG_PATH = LOG_DIR / "actions_audit.jsonl"
+QUARANTINE_DIR = PROJECT_ROOT / "quarantine"
+
+
+def _audit_action(
+    rec_id: int, category: str | None, decision: str, reason: str, path_count: int
+) -> None:
+    """Append one line to the file-action audit log.
+
+    Must never contain file contents or matched pattern values.
+    """
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "rec_id": rec_id,
+        "category": category,
+        "decision": decision,
+        "reason": reason,
+        "path_count": path_count,
+    }
+    try:
+        AUDIT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(AUDIT_LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    except OSError as e:
+        logger.error("Failed to write action audit entry: {}", e)
+
+
+def _affected_paths(db: IntelligenceDB, rec: Recommendation) -> list[str]:
+    """Resolve a recommendation's affected file IDs (JSON list) to paths."""
+    if not rec.affected_files:
+        return []
+    try:
+        ids = json.loads(rec.affected_files)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    paths: list[str] = []
+    for fid in ids:
+        try:
+            file = db.get_file(int(fid))
+        except (TypeError, ValueError):
+            file = None
+        if file and file.path:
+            paths.append(file.path)
+    return paths
+
+
+def _quarantine_files(paths: list[str], scan_id: int) -> list[dict[str, str]]:
+    """Move files into ./quarantine/<scan_id>/ instead of deleting them."""
+    qdir = QUARANTINE_DIR / str(scan_id)
+    qdir.mkdir(parents=True, exist_ok=True)
+    moved: list[dict[str, str]] = []
+    for p in paths:
+        src = Path(p)
+        if not src.is_file():
+            continue
+        dest = qdir / src.name
+        n = 1
+        while dest.exists():
+            dest = qdir / f"{src.stem}_{n}{src.suffix}"
+            n += 1
+        try:
+            shutil.move(str(src), str(dest))
+        except OSError as e:
+            logger.error("Quarantine move failed for a file: {}", e)
+            continue
+        moved.append({"original": str(src), "quarantined": str(dest)})
+    if moved:
+        with open(qdir / "manifest.jsonl", "a", encoding="utf-8") as fh:
+            for m in moved:
+                fh.write(json.dumps(m) + "\n")
+    return moved
 
 
 # ── WebSocket Manager ────────────────────────────────────────────────────────
@@ -89,6 +188,49 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
+    # ── Middleware ───────────────────────────────────────────────────────
+
+    @app.middleware("http")
+    async def observability_and_security_headers(
+        request: Request, call_next: Any
+    ) -> Any:
+        """Log one line per request and attach security headers."""
+        start = time.perf_counter()
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start) * 1000.0
+        client_host = request.client.host if request.client else "-"
+        level = "WARNING" if duration_ms > 2000 else "INFO"
+        logger.log(
+            level,
+            "{} {} -> {} ({:.1f}ms) client={}",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            client_host,
+        )
+        for header, value in SECURITY_HEADERS.items():
+            response.headers[header] = value
+        return response
+
+    # ── Exception Handling ───────────────────────────────────────────────
+    # HTTPException is deliberately not intercepted: FastAPI's normal 4xx
+    # handling stands. Only truly unhandled errors land here.
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        logger.opt(exception=exc).error(
+            "Unhandled error on {} {}", request.method, request.url.path
+        )
+        response = JSONResponse(
+            status_code=500,
+            content={"error": "internal_error", "detail": "An internal error occurred."},
+        )
+        # This response bypasses the middleware stack, so attach headers here too.
+        for header, value in SECURITY_HEADERS.items():
+            response.headers[header] = value
+        return response
+
     # ── HTML Routes ──────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
@@ -105,6 +247,15 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         profile = body.get("profile", "INTELLIGENCE")
         if not paths:
             raise HTTPException(400, "paths required")
+
+        for p in paths:
+            ok, reason = validate_scan_path(p)
+            if not ok:
+                logger.warning("Scan start rejected: {}", reason)
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "path_rejected", "path": str(p), "reason": reason},
+                )
 
         # Run scan in background
         from scanner import IntelligenceScanOrchestrator
@@ -157,14 +308,16 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     ) -> JSONResponse:
         """List files with optional filters."""
         if search:
-            files = db.search_files(search, scan_id=scan_id, limit=limit)
-        else:
-            files = db.list_files(
-                scan_id=scan_id,
-                extension=extension,
-                limit=limit,
-                offset=offset,
-            )
+            rows = db.search_files(search, limit=limit)
+            return JSONResponse({"files": [{"file": r, "score": None} for r in rows],
+                                 "count": len(rows)})
+        files = db.list_files(
+            scan_id=scan_id,
+            extension=extension,
+            domain=domain,
+            limit=limit,
+            offset=offset,
+        )
 
         results = []
         for f in files:
@@ -217,11 +370,11 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
     @app.get("/api/duplicates")
     async def list_duplicates(scan_id: int | None = None) -> JSONResponse:
         """Get duplicate file clusters."""
-        clusters = db.get_duplicate_clusters(scan_id)
+        clusters = db.get_duplicate_clusters(scan_id=scan_id)
         return JSONResponse({
-            "clusters": [c.model_dump() for c in clusters],
+            "clusters": clusters,
             "total_clusters": len(clusters),
-            "total_wasted_bytes": sum(c.total_wasted_bytes for c in clusters),
+            "total_wasted_bytes": sum(c.get("total_wasted_bytes") or 0 for c in clusters),
         })
 
     # ── Recommendation API ───────────────────────────────────────────────
@@ -244,9 +397,59 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         })
 
     @app.post("/api/recommendations/{rec_id}/execute")
-    async def execute_recommendation(rec_id: int) -> JSONResponse:
-        """Execute a recommendation (placeholder for auto-exec logic)."""
+    async def execute_recommendation(
+        rec_id: int, body: dict[str, Any] | None = Body(default=None)
+    ) -> JSONResponse:
+        """Execute a recommendation — gated, non-destructive, audited.
+
+        Requires DRIVESCAN_ALLOW_FILE_ACTIONS=1 in the environment plus a
+        {"confirm": <rec_id>} body. "delete" recommendations quarantine files
+        under ./quarantine/<scan_id>/ instead of removing them.
+        """
+        body = body or {}
+
+        def refuse(reason: str, category: str | None = None, path_count: int = 0) -> JSONResponse:
+            _audit_action(rec_id, category, "refused", reason, path_count)
+            return JSONResponse(
+                status_code=403,
+                content={"error": "action_disabled", "reason": reason},
+            )
+
+        if os.environ.get("DRIVESCAN_ALLOW_FILE_ACTIONS") != "1":
+            return refuse(
+                "file actions are disabled (set DRIVESCAN_ALLOW_FILE_ACTIONS=1 to enable)"
+            )
+
+        confirm = body.get("confirm")
+        if confirm is None or str(confirm) != str(rec_id):
+            return refuse("missing or mismatched 'confirm' value in request body")
+
+        rec = db.get_recommendation(rec_id)
+        if rec is None:
+            _audit_action(rec_id, None, "refused", "recommendation not found", 0)
+            raise HTTPException(404, "Recommendation not found")
+
+        paths = _affected_paths(db, rec)
+        for p in paths:
+            ok, reason = validate_scan_path(p)
+            if not ok:
+                return refuse(
+                    f"affected path rejected: {reason}", rec.category, len(paths)
+                )
+
+        if rec.category == "delete":
+            moved = _quarantine_files(paths, rec.scan_id)
+            db.update_recommendation_status(rec_id, "executed")
+            _audit_action(
+                rec_id, rec.category, "executed",
+                f"quarantined {len(moved)} of {len(paths)} file(s)", len(paths),
+            )
+            return JSONResponse(
+                {"status": "executed", "id": rec_id, "quarantined": len(moved)}
+            )
+
         db.update_recommendation_status(rec_id, "executed")
+        _audit_action(rec_id, rec.category, "executed", "status updated", len(paths))
         return JSONResponse({"status": "executed", "id": rec_id})
 
     # ── Score API ────────────────────────────────────────────────────────
@@ -265,8 +468,8 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         if not sid:
             return JSONResponse({"distribution": []})
 
-        dist = db.get_score_distribution(sid, dimension)
-        return JSONResponse(dist.model_dump() if dist else {"dimension": dimension, "buckets": []})
+        dist = db.get_score_distribution(dimension=dimension, scan_id=sid)
+        return JSONResponse({"dimension": dimension, "buckets": dist})
 
     @app.get("/api/scores/top")
     async def top_scores(
@@ -283,8 +486,8 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         if not sid:
             return JSONResponse({"files": []})
 
-        top = db.get_top_scores(sid, dimension=dimension, limit=limit)
-        return JSONResponse({"files": [s.model_dump() for s in top]})
+        top = db.get_top_scores(dimension=dimension, limit=limit, scan_id=sid)
+        return JSONResponse({"files": top})
 
     @app.get("/api/scores/risk")
     async def high_risk_files(
@@ -300,8 +503,8 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         if not sid:
             return JSONResponse({"files": []})
 
-        risk_files = db.get_high_risk_files(sid, min_risk=min_risk)
-        return JSONResponse({"files": [s.model_dump() for s in risk_files]})
+        risk_files = db.get_high_risk_files(threshold=min_risk, scan_id=sid)
+        return JSONResponse({"files": risk_files})
 
     # ── Export ───────────────────────────────────────────────────────────
 
@@ -319,14 +522,14 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
         summary = db.get_scan_summary(sid)
         domains = db.get_domain_stats(sid)
         recs = db.get_recommendations(sid)
-        risk = db.get_high_risk_files(sid)
+        risk = db.get_high_risk_files(scan_id=sid)
 
         return JSONResponse({
             "report_version": "2.0",
             "scan_summary": summary.model_dump() if summary else None,
             "domain_stats": [d.model_dump() for d in domains],
             "recommendations": [r.model_dump() for r in recs],
-            "high_risk_files": [r.model_dump() for r in risk],
+            "high_risk_files": risk,
         })
 
     # ── Timeline ─────────────────────────────────────────────────────────
@@ -343,8 +546,15 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health() -> JSONResponse:
-        """Health check."""
-        scans = db.list_scans(limit=1)
+        """Health check. Reports degraded (still 200) on db errors."""
+        try:
+            scans = db.list_scans(limit=1)
+        except Exception as e:
+            logger.opt(exception=e).error("Health check db access failed")
+            return JSONResponse({
+                "status": "degraded",
+                "error": f"{type(e).__name__}: {str(e)[:120]}",
+            })
         return JSONResponse({
             "status": "healthy",
             "version": "2.0.0",
@@ -369,3 +579,8 @@ def create_app(db_path: str | Path | None = None) -> FastAPI:
             ws_manager.disconnect(ws)
 
     return app
+
+
+# ASGI entry point: `uvicorn dashboard.server:app --port 8460`.
+# Import-time work is limited to building the app and opening the sqlite db.
+app = create_app()

@@ -21,10 +21,13 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 # ─── Config ──────────────────────────────────────────────────────────────────
+# Endpoints come from env; empty means "not configured" → pushes are skipped.
 
-SHARED_BRAIN_URL = "https://echo-shared-brain.bmcii1976.workers.dev"
-KNOWLEDGE_FORGE_URL = "https://echo-knowledge-forge.bmcii1976.workers.dev"
-MEMORY_PRIME_URL = "https://echo-memory-prime.bmcii1976.workers.dev"
+import os
+
+SHARED_BRAIN_URL = os.environ.get("DRIVESCAN_SHARED_BRAIN_URL", "")
+KNOWLEDGE_FORGE_URL = os.environ.get("DRIVESCAN_KNOWLEDGE_FORGE_URL", "")
+MEMORY_PRIME_URL = os.environ.get("DRIVESCAN_MEMORY_PRIME_URL", "")
 TEMPLATE_DIR = Path(__file__).parent.parent / "data" / "templates"
 TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -592,10 +595,13 @@ class Assimilator:
 
     async def _push_knowledge(self, result: AssimilationResult) -> int:
         """Push assimilated knowledge to Shared Brain, Knowledge Forge, and Memory Prime."""
+        if not (SHARED_BRAIN_URL or KNOWLEDGE_FORGE_URL or MEMORY_PRIME_URL):
+            logger.info("Knowledge push disabled — no endpoints configured")
+            return 0
         pushed = 0
         async with httpx.AsyncClient(timeout=15.0) as client:
             # 1. Push code structure summary to Shared Brain
-            if result.code_analyses:
+            if result.code_analyses and SHARED_BRAIN_URL:
                 total_funcs = sum(len(ca.functions) for ca in result.code_analyses)
                 total_classes = sum(len(ca.classes) for ca in result.code_analyses)
                 total_lines = sum(ca.total_lines for ca in result.code_analyses)
@@ -627,7 +633,7 @@ class Assimilator:
                     result.errors.append(f"Code knowledge push failed: {e}")
 
             # 2. Push doc summaries to Shared Brain
-            if result.doc_summaries:
+            if result.doc_summaries and SHARED_BRAIN_URL:
                 facts = []
                 for ds in result.doc_summaries[:20]:
                     for fact in ds.key_facts[:3]:
@@ -652,7 +658,7 @@ class Assimilator:
                         result.errors.append(f"Doc knowledge push failed: {e}")
 
             # 3. Push graded templates to Knowledge Forge
-            for tpl in result.templates_graded:
+            for tpl in (result.templates_graded if KNOWLEDGE_FORGE_URL else []):
                 try:
                     forge_content = (
                         f"TEMPLATE [{tpl.grade}] {tpl.name} ({tpl.category}): "
@@ -683,7 +689,7 @@ class Assimilator:
 
             # 4. Push graded templates to Shared Brain (importance scaled by grade)
             grade_importance = {"A": 8, "B": 7, "C": 6, "D": 5, "F": 4}
-            for tpl in result.templates_graded:
+            for tpl in (result.templates_graded if SHARED_BRAIN_URL else []):
                 try:
                     content = (
                         f"GRADED TEMPLATE [{tpl.grade}] {tpl.name}: "
@@ -706,7 +712,7 @@ class Assimilator:
                     result.errors.append(f"Brain template push failed for {tpl.name}: {e}")
 
             # 5. Push template grading summary to Memory Prime
-            if result.templates_graded:
+            if result.templates_graded and MEMORY_PRIME_URL:
                 try:
                     grade_dist: dict[str, int] = defaultdict(int)
                     for tpl in result.templates_graded:

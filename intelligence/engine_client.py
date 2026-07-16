@@ -64,6 +64,12 @@ class EngineClient:
         """Initialize client with connection pool and metrics tracking."""
         self.session: aiohttp.ClientSession | None = None
         self.base_url = ENGINE_RUNTIME_URL.rstrip("/")
+        # When no engine runtime is configured (DRIVESCAN_ENGINE_URL unset),
+        # classification is skipped cleanly instead of spamming errors and
+        # tripping the circuit breaker on every file.
+        self._enabled = bool(self.base_url)
+        # Log the "not configured" notice only once per client.
+        self._logged_disabled = False
 
         # Response cache: {cache_key: (expiry_timestamp, data)}
         self._cache: dict[str, tuple[float, dict]] = {}
@@ -240,6 +246,18 @@ class EngineClient:
         """
         if not self.session:
             raise RuntimeError("Session not initialized - use async context manager")
+
+        # No engine runtime configured — skip cleanly (no error spam, no
+        # circuit-breaker trip). This is the expected state when the tool runs
+        # without an external engine backend; classification degrades to empty.
+        if not self._enabled:
+            if not self._logged_disabled:
+                logger.info(
+                    "Engine runtime not configured (set DRIVESCAN_ENGINE_URL to enable "
+                    "classification) — skipping engine queries"
+                )
+                self._logged_disabled = True
+            return {"success": False, "error": "engine_not_configured"}
 
         # Check circuit breaker
         async with self._circuit_lock:

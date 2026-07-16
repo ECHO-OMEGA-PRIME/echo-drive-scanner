@@ -20,8 +20,10 @@ from pydantic import BaseModel, Field
 
 # ─── Config ──────────────────────────────────────────────────────────────────
 
-GS343_URL = "http://localhost:5003"
-SHARED_BRAIN_URL = "https://echo-shared-brain.bmcii1976.workers.dev"
+import os
+
+GS343_URL = os.environ.get("DRIVESCAN_GS343_URL", "")
+SHARED_BRAIN_URL = os.environ.get("DRIVESCAN_SHARED_BRAIN_URL", "")
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB for log files
 LOG_EXTENSIONS = {".log", ".out", ".err"}
@@ -324,6 +326,9 @@ class ErrorHunter:
 
     async def _load_existing_templates(self) -> None:
         """Load existing GS343 template fingerprints for deduplication."""
+        if not GS343_URL:
+            logger.info("GS343 sync disabled — no endpoint configured")
+            return
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(f"{GS343_URL}/templates")
@@ -341,6 +346,8 @@ class ErrorHunter:
 
     async def _submit_to_gs343(self, patterns: list[ErrorPattern]) -> int:
         """Submit new error patterns to GS343."""
+        if not GS343_URL:
+            return 0
         created = 0
         async with httpx.AsyncClient(timeout=10.0) as client:
             for p in patterns[:50]:
@@ -367,6 +374,9 @@ class ErrorHunter:
     async def _push_summary(self, result: ErrorHuntResult) -> None:
         """Push error hunt summary to Shared Brain."""
         if result.total_patterns_found == 0:
+            return
+        if not SHARED_BRAIN_URL:
+            logger.info("Shared Brain push disabled — no endpoint configured")
             return
 
         top_err_parts = []

@@ -20,10 +20,13 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 # ─── Config ──────────────────────────────────────────────────────────────────
+# Endpoints come from env; empty means "not configured" → pushes are skipped.
 
-SHARED_BRAIN_URL = "https://echo-shared-brain.bmcii1976.workers.dev"
-MEMORY_PRIME_URL = "https://echo-memory-prime.bmcii1976.workers.dev"
-KNOWLEDGE_FORGE_URL = "https://echo-knowledge-forge.bmcii1976.workers.dev"
+import os
+
+SHARED_BRAIN_URL = os.environ.get("DRIVESCAN_SHARED_BRAIN_URL", "")
+MEMORY_PRIME_URL = os.environ.get("DRIVESCAN_MEMORY_PRIME_URL", "")
+KNOWLEDGE_FORGE_URL = os.environ.get("DRIVESCAN_KNOWLEDGE_FORGE_URL", "")
 
 # Minimum file patterns that indicate a "complete" project
 PROJECT_COMPLETENESS_PATTERNS: dict[str, list[str]] = {
@@ -298,10 +301,13 @@ class EKMGenerator:
 
     async def _push_to_cloud(self, result: EKMGenerationResult) -> int:
         """Push generated EKMs to Shared Brain, Memory Prime, and Knowledge Forge."""
+        if not (SHARED_BRAIN_URL or MEMORY_PRIME_URL or KNOWLEDGE_FORGE_URL):
+            logger.info("EKM push disabled — no endpoints configured")
+            return 0
         pushed = 0
         async with httpx.AsyncClient(timeout=15.0) as client:
             # Push domain summaries
-            for summary in result.domain_summaries:
+            for summary in (result.domain_summaries if SHARED_BRAIN_URL else []):
                 content = (
                     f"DOMAIN SCAN SUMMARY [{summary.domain}]: {summary.file_count} files, "
                     f"{summary.total_size_bytes / (1024*1024):.1f} MB, "
@@ -327,7 +333,7 @@ class EKMGenerator:
                     logger.warning(f"Shared Brain push failed: {e}")
 
             # Push incomplete projects as a batch
-            if result.incomplete_projects:
+            if result.incomplete_projects and SHARED_BRAIN_URL:
                 incomplete_text = "INCOMPLETE PROJECTS DETECTED:\n" + "\n".join(
                     f"- {p.name} ({p.project_type}) at {p.path}: {p.completeness_pct}% complete, missing {', '.join(p.missing_patterns)}"
                     for p in result.incomplete_projects[:20]
@@ -349,7 +355,7 @@ class EKMGenerator:
                     result.errors.append(f"Incomplete projects push failed: {e}")
 
             # Push project suggestions
-            if result.project_suggestions:
+            if result.project_suggestions and SHARED_BRAIN_URL:
                 suggestions_text = "PROJECT SUGGESTIONS FROM SCAN:\n" + "\n".join(
                     f"- [{s.priority.upper()}] {s.title}: {s.description} ({s.rationale})"
                     for s in result.project_suggestions[:10]
@@ -371,31 +377,32 @@ class EKMGenerator:
                     result.errors.append(f"Suggestions push failed: {e}")
 
             # Push to Memory Prime as structured data
-            try:
-                resp = await client.post(
-                    f"{MEMORY_PRIME_URL}/store",
-                    json={
-                        "category": "scan_intelligence",
-                        "content": json.dumps({
-                            "domains": len(result.domain_summaries),
-                            "incomplete_projects": len(result.incomplete_projects),
-                            "suggestions": len(result.project_suggestions),
-                            "top_domains": [
-                                {"domain": s.domain, "files": s.file_count}
-                                for s in sorted(result.domain_summaries, key=lambda x: x.file_count, reverse=True)[:10]
-                            ],
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }),
-                        "tags": ["scan", "ekm", "intelligence"],
-                    },
-                )
-                if resp.status_code < 300:
-                    pushed += 1
-            except Exception as e:
-                result.errors.append(f"Memory Prime push failed: {e}")
+            if MEMORY_PRIME_URL:
+                try:
+                    resp = await client.post(
+                        f"{MEMORY_PRIME_URL}/store",
+                        json={
+                            "category": "scan_intelligence",
+                            "content": json.dumps({
+                                "domains": len(result.domain_summaries),
+                                "incomplete_projects": len(result.incomplete_projects),
+                                "suggestions": len(result.project_suggestions),
+                                "top_domains": [
+                                    {"domain": s.domain, "files": s.file_count}
+                                    for s in sorted(result.domain_summaries, key=lambda x: x.file_count, reverse=True)[:10]
+                                ],
+                                "timestamp": datetime.now(timezone.utc).isoformat(),
+                            }),
+                            "tags": ["scan", "ekm", "intelligence"],
+                        },
+                    )
+                    if resp.status_code < 300:
+                        pushed += 1
+                except Exception as e:
+                    result.errors.append(f"Memory Prime push failed: {e}")
 
             # Push domain summaries to Knowledge Forge as individual documents
-            for summary in result.domain_summaries:
+            for summary in (result.domain_summaries if KNOWLEDGE_FORGE_URL else []):
                 try:
                     forge_content = (
                         f"DOMAIN EKM [{summary.domain}]: {summary.file_count} files, "
@@ -426,7 +433,7 @@ class EKMGenerator:
                     result.errors.append(f"Knowledge Forge push failed for {summary.domain}: {e}")
 
             # Push project suggestions to Knowledge Forge
-            if result.project_suggestions:
+            if result.project_suggestions and KNOWLEDGE_FORGE_URL:
                 try:
                     suggestions_forge = "PROJECT SUGGESTIONS FROM INTELLIGENCE SCAN:\n" + "\n".join(
                         f"[{s.priority.upper()}] {s.title}: {s.description}\n  Rationale: {s.rationale}\n  Domains: {', '.join(s.related_domains)}"
@@ -451,7 +458,7 @@ class EKMGenerator:
                     result.errors.append(f"Knowledge Forge suggestions push failed: {e}")
 
             # Push incomplete projects to Knowledge Forge
-            if result.incomplete_projects:
+            if result.incomplete_projects and KNOWLEDGE_FORGE_URL:
                 try:
                     incomplete_forge = "INCOMPLETE PROJECTS FROM INTELLIGENCE SCAN:\n" + "\n".join(
                         f"- {p.name} ({p.project_type}) at {p.path}: {p.completeness_pct}% complete\n  Present: {', '.join(p.present_files)}\n  Missing: {', '.join(p.missing_patterns)}"

@@ -191,8 +191,16 @@ def extract_js_functions(path: Path, content: str) -> list[dict]:
     return results
 
 
+def _mask_secret(value: str) -> str:
+    """Mask a matched secret value. The raw match must never be stored or
+    logged anywhere — at most the first 2 + last 2 chars survive."""
+    if len(value) <= 4:
+        return "****"
+    return f"{value[:2]}…{value[-2:]} (len={len(value)})"
+
+
 def scan_secrets(content: str, path: Path) -> list[dict]:
-    """Scan content for secret patterns. Returns findings list."""
+    """Scan content for secret patterns. Returns findings with MASKED previews."""
     findings = []
     for pattern, secret_type in SECRET_PATTERNS:
         for m in re.finditer(pattern, content):
@@ -200,7 +208,7 @@ def scan_secrets(content: str, path: Path) -> list[dict]:
                 'file_path': str(path),
                 'secret_type': secret_type,
                 'line_number': content[:m.start()].count('\n') + 1,
-                'match_preview': m.group()[:20] + '...',
+                'match_preview': _mask_secret(m.group()),
             })
     return findings
 

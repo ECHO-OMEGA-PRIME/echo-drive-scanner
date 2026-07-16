@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field
@@ -9,21 +10,25 @@ from pydantic import BaseModel, Field
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DB_PATH = PROJECT_ROOT / "intelligence.db"
+# DRIVESCAN_DB_PATH lets deploy/smoke environments point at an alternate db.
+DB_PATH = Path(os.environ.get("DRIVESCAN_DB_PATH") or (PROJECT_ROOT / "intelligence.db"))
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 EXISTING_SCANNER = Path(r"O:\ECHO_OMEGA_PRIME\CORE\system_scanner.py")
 
 # ── Cloud Endpoints ──────────────────────────────────────────────────────────
+# All external endpoints and credentials come from the environment. An empty
+# value means "not configured": callers must skip the network call entirely
+# (log a single INFO line) rather than error.
 
-ENGINE_API_KEY: str = "echo-omega-prime-forge-x-2026"
-ENGINE_RUNTIME_URL = "https://echo-engine-runtime.bmcii1976.workers.dev"
-SHARED_BRAIN_URL = "https://echo-shared-brain.bmcii1976.workers.dev"
-GRAPH_RAG_URL = "https://echo-graph-rag.bmcii1976.workers.dev"
-KNOWLEDGE_FORGE_URL = "https://echo-knowledge-forge.bmcii1976.workers.dev"
-AI_ORCHESTRATOR_URL = "https://echo-ai-orchestrator.bmcii1976.workers.dev"
-DRIVE_INTELLIGENCE_URL = "https://echo-drive-intelligence.bmcii1976.workers.dev"
+ENGINE_API_KEY: str = os.environ.get("DRIVESCAN_ENGINE_API_KEY", "")
+ENGINE_RUNTIME_URL = os.environ.get("DRIVESCAN_ENGINE_URL", "")
+SHARED_BRAIN_URL = os.environ.get("DRIVESCAN_SHARED_BRAIN_URL", "")
+GRAPH_RAG_URL = os.environ.get("DRIVESCAN_GRAPH_RAG_URL", "")
+KNOWLEDGE_FORGE_URL = os.environ.get("DRIVESCAN_KNOWLEDGE_FORGE_URL", "")
+AI_ORCHESTRATOR_URL = os.environ.get("DRIVESCAN_AI_ORCHESTRATOR_URL", "")
+DRIVE_INTELLIGENCE_URL = os.environ.get("DRIVESCAN_WORKER_URL", "")
 
 # ── Engine Runtime API ───────────────────────────────────────────────────────
 
@@ -45,7 +50,9 @@ MAX_CONCURRENT_REQUESTS = 20
 MAX_REQUESTS_PER_MINUTE = 500
 CACHE_TTL_SECONDS = 3600
 REQUEST_TIMEOUT_SECONDS = 3
-MAX_RETRIES = 0
+# Number of attempts per engine request. Must be >= 1 or the request loop
+# never executes (range(0)). Overridable via DRIVESCAN_ENGINE_RETRIES.
+MAX_RETRIES = int(os.environ.get("DRIVESCAN_ENGINE_RETRIES", "2"))
 RETRY_BACKOFF_BASE = 0.5
 
 # ── Content Sampling ─────────────────────────────────────────────────────────
@@ -496,10 +503,100 @@ SENSITIVE_SCAN_ENABLED = True      # Scan for secrets/credentials in all files
 SECRET_ALERT_THRESHOLD = 1         # Alert immediately on any secret found
 
 # ── Worker Sync ────────────────────────────────────────────────────────────
-WORKER_SYNC_ENABLED = True         # Push results to echo-drive-intelligence worker
-DRIVE_INTELLIGENCE_URL = "https://echo-drive-intelligence.bmcii1976.workers.dev"
+# Off by default: opt in with DRIVESCAN_WORKER_SYNC=1 (also requires
+# DRIVESCAN_WORKER_URL and an API key, or the push is skipped).
+WORKER_SYNC_ENABLED = os.environ.get("DRIVESCAN_WORKER_SYNC", "0") == "1"
 WORKER_PUSH_BATCH_SIZE = 500       # Files per push batch to worker
 
 # ── DB Maintenance ─────────────────────────────────────────────────────────
 DB_MAX_SIZE_GB = 10.0              # Warn when DB exceeds this size
 DB_KEEP_SCANS = 3                  # Keep N most recent scans per drive, archive rest
+
+
+# ── Path Scope Controls (SAFETY-CRITICAL) ──────────────────────────────────
+# The scanner walks arbitrary filesystem paths and the dashboard can trigger
+# file actions. These lists bound where it is allowed to operate.
+
+
+def _env_path_list(name: str) -> list[str]:
+    """Parse an os.pathsep-separated env var into a list of path entries."""
+    return [p.strip() for p in os.environ.get(name, "").split(os.pathsep) if p.strip()]
+
+
+# Paths the scanner must NEVER traverse or act on. Absolute entries are
+# treated as protected subtrees; bare entries match as substrings of the
+# resolved path. Extend via env DRIVESCAN_PROTECTED_PATHS (os.pathsep-separated).
+PROTECTED_PATHS: list[str] = [
+    # Windows system locations
+    r"C:\Windows",
+    r"C:\Program Files",
+    r"C:\Program Files (x86)",
+    r"C:\ProgramData",
+    "$Recycle.Bin",
+    "System Volume Information",
+    # POSIX system locations
+    "/etc", "/sys", "/proc", "/dev", "/boot", "/usr/lib", "/var/lib",
+    # Placeholder: replace with the root of your personal-data tree(s),
+    # e.g. r"C:\Users\you\PersonalData". Kept inert until edited.
+    "__PERSONAL_DATA_TREE_PLACEHOLDER__",
+] + _env_path_list("DRIVESCAN_PROTECTED_PATHS")
+
+# If non-empty, every scan root must live inside one of these prefixes.
+# Empty (default) = allow anywhere, but PROTECTED_PATHS always applies.
+# Set via env DRIVESCAN_ALLOWLIST (os.pathsep-separated).
+SCAN_ALLOWLIST: list[str] = _env_path_list("DRIVESCAN_ALLOWLIST")
+
+
+def _norm(p: str | Path) -> str:
+    """Normalize a path string for case-insensitive prefix comparison."""
+    return os.path.normcase(os.path.normpath(str(p)))
+
+
+def _is_within(path_norm: str, prefix: str | Path) -> bool:
+    """True if an already-normalized path equals or lives under prefix."""
+    prefix_norm = _norm(prefix)
+    return path_norm == prefix_norm or path_norm.startswith(prefix_norm + os.sep)
+
+
+def validate_scan_path(
+    path: str | Path,
+    protected: list[str] | None = None,
+    allowlist: list[str] | None = None,
+) -> tuple[bool, str]:
+    """Check whether a path may be scanned / acted upon.
+
+    Returns (ok, reason). A path is rejected if it resolves inside any
+    PROTECTED_PATHS entry, or — when SCAN_ALLOWLIST is non-empty — outside
+    every allowlist prefix. The optional arguments exist for tests; callers
+    normally rely on the module-level lists.
+    """
+    protected = PROTECTED_PATHS if protected is None else protected
+    allowlist = SCAN_ALLOWLIST if allowlist is None else allowlist
+
+    try:
+        resolved = Path(path).resolve()
+    except (OSError, ValueError) as e:
+        return False, f"cannot resolve path: {e}"
+    norm = _norm(resolved)
+
+    for entry in protected:
+        entry = entry.strip()
+        if not entry:
+            continue
+        if os.path.isabs(entry) or (len(entry) > 1 and entry[1] == ":"):
+            if _is_within(norm, entry):
+                return False, f"path is inside protected location '{entry}'"
+        elif os.path.normcase(entry) in norm:
+            return False, f"path matches protected pattern '{entry}'"
+
+    if allowlist:
+        if not any(_is_within(norm, entry) for entry in allowlist if entry.strip()):
+            return False, "path is outside the configured scan allowlist"
+
+    return True, "ok"
+
+
+def is_protected_path(path: str | Path) -> bool:
+    """Protected-paths-only check (ignores the allowlist) for directory pruning."""
+    ok, _ = validate_scan_path(path, allowlist=[])
+    return not ok

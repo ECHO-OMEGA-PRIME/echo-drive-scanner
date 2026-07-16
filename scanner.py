@@ -32,12 +32,16 @@ from loguru import logger
 
 from config import (
     DRIVE_INTELLIGENCE_URL,
+    ENGINE_API_KEY,
+    KNOWLEDGE_FORGE_URL,
     WORKER_SYNC_ENABLED,
     WORKER_PUSH_BATCH_SIZE,
     DB_PATH,
     LOG_DIR,
     SCAN_PROFILES,
     ScanConfig,
+    is_protected_path,
+    validate_scan_path,
 )
 from intelligence.classifier import ClassificationPipeline
 from intelligence.content_sampler import ContentSampler
@@ -95,6 +99,11 @@ def discover_files(
             logger.warning("Path does not exist: {}", root_path)
             continue
 
+        ok, reason = validate_scan_path(root_path)
+        if not ok:
+            logger.warning("Refusing to scan {}: {}", root_path, reason)
+            continue
+
         logger.info("Discovering files in: {}", root_path)
 
         if root_path.is_file():
@@ -102,11 +111,12 @@ def discover_files(
             continue
 
         for dirpath, dirnames, filenames in os.walk(root_path, topdown=True):
-            # Prune skip directories
+            # Prune skip directories and protected subtrees
             dirnames[:] = [
                 d for d in dirnames
                 if d not in skip_dirs
                 and not d.startswith(".")
+                and not is_protected_path(Path(dirpath) / d)
             ]
 
             depth = len(Path(dirpath).parts) - len(root_path.parts)
@@ -160,18 +170,39 @@ def discover_files_streaming(
         if not root_path.exists():
             logger.warning("Path does not exist: {}", root_path)
             continue
-        for dirpath, dirnames, filenames in os.walk(root_path, followlinks=False):
-            # Prune skip dirs in-place
+        ok, reason = validate_scan_path(root_path)
+        if not ok:
+            logger.warning("Refusing to scan {}: {}", root_path, reason)
+            continue
+        if root_path.is_file():
+            yield root_path
+            continue
+        for dirpath, dirnames, filenames in os.walk(root_path, topdown=True, followlinks=False):
+            # Prune skip dirs and protected subtrees in-place (defense in depth:
+            # a root may pass validation while a subtree is protected)
             dirnames[:] = [
                 d for d in dirnames
                 if d not in skip_dirs and not d.startswith(".")
+                and not is_protected_path(Path(dirpath) / d)
             ]
+
+            depth = len(Path(dirpath).parts) - len(root_path.parts)
+            if config.max_depth and depth > config.max_depth:
+                dirnames.clear()
+                continue
+
             for filename in filenames:
                 file_path = Path(dirpath) / filename
                 try:
-                    if config.max_file_size_mb and file_path.stat().st_size > config.max_file_size_mb * 1024 * 1024:
+                    stat = file_path.stat()
+                    if stat.st_size == 0:
                         continue
-                    if config.extensions and file_path.suffix.lower() not in config.extensions:
+                    if config.max_file_size and stat.st_size > config.max_file_size:
+                        continue
+                    ext = file_path.suffix.lower()
+                    if config.include_extensions and ext not in config.include_extensions:
+                        continue
+                    if config.exclude_extensions and ext in config.exclude_extensions:
                         continue
                     yield file_path
                 except (PermissionError, OSError):
@@ -282,7 +313,7 @@ class IntelligenceScanOrchestrator:
         try:
             # Pre-flight checks
             db_ok, free_gb = check_disk_space(self.db.db_path)
-            if not free_gb:
+            if not db_ok:
                 logger.error("Insufficient disk space for scan DB — aborting")
                 self.db.complete_scan(scan_id, 0, 0, 0, 0, 0.0)
                 return scan_id
@@ -297,6 +328,7 @@ class IntelligenceScanOrchestrator:
             total_size = 0
             all_stored_ids: list[int] = []
             path_to_id_partial: dict[str, int] = {}
+            sampled_records: list[FileRecord] = []
 
             # Stream discovery + sample + store in rolling batches
             logger.info("Phase 2: Streaming batch sample + store (batch_size={})", BATCH_SIZE)
@@ -361,7 +393,9 @@ class IntelligenceScanOrchestrator:
 
                 ids = self.db.upsert_files_batch(sampled)
                 for rec, fid in zip(sampled, ids):
+                    rec.id = fid
                     path_to_id_partial[rec.path] = fid
+                sampled_records.extend(sampled)
                 return ids
 
             # Priority sort: scan high-value dirs first
@@ -402,17 +436,6 @@ class IntelligenceScanOrchestrator:
             # Update IDs from database — returned IDs correspond 1:1 with sampled_records
             path_to_id: dict[str, int] = {}
             path_to_id = path_to_id_partial  # already built during streaming flush
-
-            # Phase 2b: Deduplication
-            logger.info("Phase 2b: Deduplication")
-            try:
-                dedup = Deduplicator(self.db)
-                dedup_results = dedup.find_duplicates(scan_id)
-                logger.info("Dedup complete: {} clusters, {} wasted bytes",
-                    dedup_results.get('clusters', 0),
-                    dedup_results.get('wasted_bytes', 0))
-            except Exception as de:
-                logger.warning("Dedup failed: {}", de)
 
             # Phase 2c: Library stats
             lib_stats = self.db.get_library_stats()
@@ -544,19 +567,22 @@ class IntelligenceScanOrchestrator:
                     db_path = str(Path(__file__).parent / "intelligence.db")
                     store_proposals_to_db(db_path, proposals)
                     logger.info("Stage 10: {} proposals stored", len(proposals))
-                    kf_payload = format_proposals_for_knowledge_forge(proposals, scan_id, paths)
-                    try:
-                        import aiohttp as _ah
-                        async with _ah.ClientSession() as _s:
-                            async with _s.post(
-                                "https://echo-knowledge-forge.bmcii1976.workers.dev/ingest",
-                                json=kf_payload,
-                                headers={"X-Echo-API-Key": "Pr0m3th3us!Prime2025"},
-                                timeout=_ah.ClientTimeout(total=30),
-                            ) as _r:
-                                logger.info("Stage 10: Knowledge Forge -> {}", _r.status)
-                    except Exception as _kfe:
-                        logger.warning("Stage 10: KF ingest failed: {}", _kfe)
+                    if KNOWLEDGE_FORGE_URL and ENGINE_API_KEY:
+                        kf_payload = format_proposals_for_knowledge_forge(proposals, scan_id, paths)
+                        try:
+                            import aiohttp as _ah
+                            async with _ah.ClientSession() as _s:
+                                async with _s.post(
+                                    f"{KNOWLEDGE_FORGE_URL}/ingest",
+                                    json=kf_payload,
+                                    headers={"X-Echo-API-Key": ENGINE_API_KEY},
+                                    timeout=_ah.ClientTimeout(total=30),
+                                ) as _r:
+                                    logger.info("Stage 10: Knowledge Forge -> {}", _r.status)
+                        except Exception as _kfe:
+                            logger.warning("Stage 10: KF ingest failed: {}", _kfe)
+                    else:
+                        logger.info("Stage 10: Knowledge Forge sync disabled — no endpoint/key configured")
             except Exception as _ae:
                 logger.warning("Stage 10 failed (non-fatal): {}", _ae)
 
@@ -645,27 +671,14 @@ class IntelligenceScanOrchestrator:
             True if all batches uploaded successfully.
         """
         if not DRIVE_INTELLIGENCE_URL:
-            logger.warning("DRIVE_INTELLIGENCE_URL not set, skipping worker push")
+            logger.info("Worker sync disabled — no endpoint configured (set DRIVESCAN_WORKER_URL)")
             return False
 
-        # Resolve API key: env first, then vault
-        # Key: echo-omega-prime-forge-x-2026 (confirmed working on drive-intelligence worker)
-        api_key = os.environ.get("ECHO_API_KEY", "echo-omega-prime-forge-x-2026")
+        # Resolve API key from environment only — never hardcoded.
+        api_key = os.environ.get("DRIVESCAN_ENGINE_API_KEY") or os.environ.get("ECHO_API_KEY", "")
         if not api_key:
-            try:
-                import aiohttp as _ah2
-                async with _ah2.ClientSession() as _vs:
-                    async with _vs.get(
-                        "https://echo-vault-api.bmcii1976.workers.dev/get",
-                        params={"service": "echo-drive-intelligence"},
-                        headers={"X-Echo-API-Key": "echo-vault-master-2024"},
-                        timeout=_ah2.ClientTimeout(total=5),
-                    ) as _vr:
-                        if _vr.status == 200:
-                            vd = await _vr.json()
-                            api_key = vd.get("api_key") or vd.get("value", "echo-omega-prime-forge-x-2026")
-            except Exception:
-                api_key = "echo-omega-prime-forge-x-2026"
+            logger.info("Worker sync disabled — no API key configured (set DRIVESCAN_ENGINE_API_KEY)")
+            return False
 
         headers = {
             "Content-Type": "application/json",

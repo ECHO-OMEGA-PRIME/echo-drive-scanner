@@ -732,32 +732,47 @@ class IntelligenceDB:
                 return None
             return IntelligenceScore(**dict(row))
 
-    def get_top_scores(self, dimension: str = "overall_score", limit: int = 50) -> list[dict[str, Any]]:
-        """Get top files by a score dimension."""
+    def get_top_scores(
+        self, dimension: str = "overall_score", limit: int = 50,
+        scan_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get top files by a score dimension, optionally scoped to a scan."""
         valid = {"overall_score", "quality_score", "importance_score",
                  "sensitivity_score", "risk_score", "uniqueness_score"}
         if dimension not in valid:
             dimension = "overall_score"
+        where = "WHERE s.scan_id=?" if scan_id is not None else ""
+        params: list[Any] = [scan_id] if scan_id is not None else []
+        params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""SELECT s.*, f.path, f.filename, f.extension, f.size_bytes
                     FROM intelligence_scores s
                     JOIN files f ON f.id=s.file_id
+                    {where}
                     ORDER BY s.{dimension} DESC LIMIT ?""",
-                (limit,),
+                params,
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_high_risk_files(self, threshold: float = 70.0, limit: int = 100) -> list[dict[str, Any]]:
-        """Get files with risk score above threshold."""
+    def get_high_risk_files(
+        self, threshold: float = 70.0, limit: int = 100,
+        scan_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get files with risk score above threshold, optionally scoped to a scan."""
+        scan_clause = "AND s.scan_id=?" if scan_id is not None else ""
+        params: list[Any] = [threshold]
+        if scan_id is not None:
+            params.append(scan_id)
+        params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT s.*, f.path, f.filename, f.extension
+                f"""SELECT s.*, f.path, f.filename, f.extension
                    FROM intelligence_scores s
                    JOIN files f ON f.id=s.file_id
-                   WHERE s.risk_score >= ?
+                   WHERE s.risk_score >= ? {scan_clause}
                    ORDER BY s.risk_score DESC LIMIT ?""",
-                (threshold, limit),
+                params,
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -830,18 +845,35 @@ class IntelligenceDB:
             conn.commit()
             return cluster_id  # type: ignore[return-value]
 
-    def get_duplicate_clusters(self, min_count: int = 2, limit: int = 100) -> list[dict[str, Any]]:
-        """Get duplicate clusters with at least min_count members."""
+    def get_duplicate_clusters(
+        self, min_count: int = 2, limit: int = 100,
+        scan_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get duplicate clusters with at least min_count members.
+
+        When scan_id is given, only clusters containing at least one file
+        from that scan are returned.
+        """
+        scan_clause = (
+            """AND EXISTS (SELECT 1 FROM duplicate_members dm2
+                           JOIN files f ON f.id=dm2.file_id
+                           WHERE dm2.cluster_id=dc.id AND f.scan_id=?)"""
+            if scan_id is not None else ""
+        )
+        params: list[Any] = [min_count]
+        if scan_id is not None:
+            params.append(scan_id)
+        params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT dc.*, GROUP_CONCAT(dm.file_id) as member_ids
+                f"""SELECT dc.*, GROUP_CONCAT(dm.file_id) as member_ids
                    FROM duplicate_clusters dc
                    JOIN duplicate_members dm ON dm.cluster_id=dc.id
-                   WHERE dc.file_count >= ?
+                   WHERE dc.file_count >= ? {scan_clause}
                    GROUP BY dc.id
                    ORDER BY dc.total_wasted_bytes DESC
                    LIMIT ?""",
-                (min_count, limit),
+                params,
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -913,6 +945,14 @@ class IntelligenceDB:
             ).fetchall()
             return [Recommendation(**dict(r)) for r in rows]
 
+    def get_recommendation(self, rec_id: int) -> Recommendation | None:
+        """Get a single recommendation by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM recommendations WHERE id=?", (rec_id,)
+            ).fetchone()
+            return Recommendation(**dict(row)) if row else None
+
     def update_recommendation_status(self, rec_id: int, status: str) -> None:
         """Update a recommendation's status."""
         with self._connect() as conn:
@@ -970,8 +1010,9 @@ class IntelligenceDB:
             dup_row = conn.execute(
                 """SELECT COUNT(*) as clusters, COALESCE(SUM(total_wasted_bytes), 0) as wasted
                    FROM duplicate_clusters dc
-                   JOIN duplicate_members dm ON dm.cluster_id=dc.id
-                   WHERE dm.file_id IN (SELECT id FROM files WHERE scan_id=?)""",
+                   WHERE EXISTS (SELECT 1 FROM duplicate_members dm
+                                 JOIN files f ON f.id=dm.file_id
+                                 WHERE dm.cluster_id=dc.id AND f.scan_id=?)""",
                 (scan_id,),
             ).fetchone()
 
@@ -1023,14 +1064,22 @@ class IntelligenceDB:
             ).fetchall()
             return [dict(r) for r in rows]
 
-    def get_score_distribution(self, dimension: str = "overall_score", buckets: int = 20) -> list[dict[str, Any]]:
-        """Get score distribution as histogram buckets."""
+    def get_score_distribution(
+        self, dimension: str = "overall_score", buckets: int = 20,
+        scan_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get score distribution as histogram buckets, optionally scoped to a scan."""
         valid = {"overall_score", "quality_score", "importance_score",
                  "sensitivity_score", "risk_score", "staleness_score", "uniqueness_score"}
         if dimension not in valid:
             dimension = "overall_score"
 
         bucket_size = 100.0 / buckets
+        where = "WHERE scan_id=?" if scan_id is not None else ""
+        params: list[Any] = [bucket_size, bucket_size, bucket_size, bucket_size, bucket_size]
+        if scan_id is not None:
+            params.append(scan_id)
+        params.append(bucket_size)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""SELECT
@@ -1038,9 +1087,10 @@ class IntelligenceDB:
                     CAST({dimension} / ? AS INTEGER) * ? + ? as bucket_end,
                     COUNT(*) as count
                     FROM intelligence_scores
+                    {where}
                     GROUP BY CAST({dimension} / ? AS INTEGER)
                     ORDER BY bucket_start""",
-                (bucket_size, bucket_size, bucket_size, bucket_size, bucket_size, bucket_size),
+                params,
             ).fetchall()
             return [dict(r) for r in rows]
 

@@ -1,5 +1,7 @@
 """Tests for intelligence scoring module."""
 
+from datetime import datetime, timedelta, timezone
+
 from intelligence.scorer import (
     IntelligenceScorer,
     calculate_importance,
@@ -13,6 +15,11 @@ from intelligence.scorer import (
 from storage.models import Classification, DuplicateCluster, FileRecord
 
 
+def _days_ago(days: int) -> str:
+    """ISO-8601 UTC timestamp `days` days before now."""
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
 def _make_file(**kwargs) -> FileRecord:
     """Create a test FileRecord with defaults."""
     defaults = {
@@ -21,8 +28,8 @@ def _make_file(**kwargs) -> FileRecord:
         "filename": "file.txt",
         "extension": ".txt",
         "size_bytes": 1024,
-        "modified_at": "2026-02-27T00:00:00Z",
-        "accessed_at": "2026-02-27T00:00:00Z",
+        "modified_at": _days_ago(1),
+        "accessed_at": _days_ago(1),
         "depth": 3,
     }
     defaults.update(kwargs)
@@ -65,14 +72,14 @@ def test_quality_rich_file():
 
 def test_staleness_fresh():
     """Recently modified file should have low staleness."""
-    f = _make_file(modified_at="2026-02-27T00:00:00Z", accessed_at="2026-02-27T00:00:00Z")
+    f = _make_file(modified_at=_days_ago(1), accessed_at=_days_ago(1))
     score = calculate_staleness(f)
     assert score <= 10.0
 
 
 def test_staleness_ancient():
     """Very old file should have high staleness."""
-    f = _make_file(modified_at="2020-01-01T00:00:00Z", accessed_at="2020-01-01T00:00:00Z")
+    f = _make_file(modified_at=_days_ago(6 * 365), accessed_at=_days_ago(6 * 365))
     score = calculate_staleness(f)
     assert score >= 75.0
 
