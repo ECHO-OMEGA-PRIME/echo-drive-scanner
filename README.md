@@ -385,3 +385,19 @@ python quality_gate.py
 ```
 
 The gate stops on the first failure and verifies compilation, dependency integrity, Ruff, critical-surface mypy, the full test suite, an enforced 85% security-critical branch-coverage floor, a real staged scan/API smoke test, and dependency vulnerability audit. Hash-complete evidence is written under `artifacts/quality/`.
+
+## v2.2 completion status
+
+The read-only scanner core and governed service passed the final completion gate on 2026-07-16.
+
+- 99 tests passed
+- Full-source mypy: 0 errors across 30 production source files
+- Security-critical coverage: 92.60%
+- Production-core coverage: 59.20% with a 55% non-regression floor
+- Live smoke: 25/25 passed
+- Real qualification: 163 files discovered, 155 classified, 12 duplicate clusters, 17 build proposals
+- Service version: 2.2.0; API contract version: 2.1
+- Deterministic `LOCAL_RULES_V1` classification operates when the external engine is unavailable
+- Complete strict SDK manifest and deterministic 13-capability catalog migration are under `contracts/`
+
+The central capability catalog update is a separate governed deployment step. Reclaim, quarantine, delete, and restore remain unavailable until separately certified.

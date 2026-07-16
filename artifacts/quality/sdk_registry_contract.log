@@ -1,0 +1,7 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe tools/sdk_registry_deployment.py --check
+RETURN_CODE: 0
+
+STDOUT:
+{"capabilities": 13, "execution": "governed_registry_write_required", "manifest_sha256": "1e7eebbf2182dbbfe3bcacd574140cc18c78ad5f9768eeaaacf57b1afa7e0ee6", "migration_sha256": "d3e46b86f2783b7758a24eae87a710c8ad0ec674285b0f0f1a1c509142a43150", "output": "C:\\Users\\bobmc\\echo-drive-scanner\\contracts\\sdk_registry_migration_v2_2.sql", "status": "valid"}
+
+STDERR:

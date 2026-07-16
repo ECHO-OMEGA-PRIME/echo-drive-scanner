@@ -31,16 +31,14 @@ GATES: list[tuple[str, list[str]]] = [
     ("dependency_integrity", [sys.executable, "-m", "pip", "check"]),
     ("lint", [sys.executable, "-m", "ruff", "check", ".", "--exclude", ".venv"]),
     (
-        "critical_types",
+        "full_types",
         [
             sys.executable,
             "-m",
             "mypy",
-            "--follow-imports=skip",
-            "dashboard/api_models.py",
-            "dashboard/security.py",
-            "dashboard/server.py",
-            "intelligence/function_library.py",
+            ".",
+            "--exclude",
+            ".venv|artifacts|tests",
         ],
     ),
     ("tests", [sys.executable, "-m", "pytest", "-q"]),
@@ -59,6 +57,37 @@ GATES: list[tuple[str, list[str]]] = [
             "--cov-report=json:artifacts/critical-coverage.json",
             "-q",
         ],
+    ),
+    (
+        "production_core_coverage",
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--cov=scanner",
+            "--cov=storage.db",
+            "--cov=dashboard.server",
+            "--cov=dashboard.security",
+            "--cov=dashboard.api_models",
+            "--cov=config",
+            "--cov=intelligence.classifier",
+            "--cov=intelligence.content_sampler",
+            "--cov=intelligence.engine_client",
+            "--cov=intelligence.function_library",
+            "--cov=intelligence.deduplicator",
+            "--cov=intelligence.recommender",
+            "--cov=intelligence.relationship_mapper",
+            "--cov=intelligence.scorer",
+            "--cov=intelligence.project_advisor",
+            "--cov-report=term-missing",
+            "--cov-report=json:artifacts/production-core-coverage.json",
+            "--cov-fail-under=55",
+        ],
+    ),
+    (
+        "sdk_registry_contract",
+        [sys.executable, "tools/sdk_registry_deployment.py", "--check"],
     ),
     ("live_smoke", [sys.executable, "smoke_live.py"]),
     (
@@ -123,7 +152,7 @@ def main() -> int:
             break
 
     report = {
-        "report_version": "1.0",
+        "report_version": "2.0",
         "generated_at": datetime.now(UTC).isoformat(),
         "repository": str(ROOT),
         "verdict": "PASS"

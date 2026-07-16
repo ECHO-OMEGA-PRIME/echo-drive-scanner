@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -526,7 +527,7 @@ class RecommendationEngine:
         self.recommendations = []
         logger.info("Generating recommendations for {} files", len(files))
 
-        generators = [
+        generators: list[tuple[str, Callable[..., list[Recommendation]], tuple[Any, ...]]] = [
             (
                 "alert",
                 _gen_alert_recommendations,

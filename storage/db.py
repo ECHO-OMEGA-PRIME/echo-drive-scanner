@@ -524,8 +524,10 @@ class IntelligenceDB:
             )
             conn.commit()
             scan_id = cursor.lastrowid
+            if scan_id is None:
+                raise RuntimeError("SQLite did not return a scan id after insert")
             logger.info("Created scan #{} profile={} drives={}", scan_id, profile, drives)
-            return scan_id  # type: ignore[return-value]
+            return int(scan_id)
 
     def complete_scan(
         self,
@@ -748,7 +750,7 @@ class IntelligenceDB:
                         file.scan_id,
                     ),
                 )
-                file_id = cursor.lastrowid  # type: ignore[assignment]
+                file_id = cursor.lastrowid
             self._record_observation(conn, file, int(file_id))
             conn.commit()
             return file_id
@@ -808,7 +810,7 @@ class IntelligenceDB:
                             f.scan_id,
                         ),
                     )
-                    file_id = cursor.lastrowid  # type: ignore[assignment]
+                    file_id = cursor.lastrowid
                 ids.append(file_id)
                 self._record_observation(conn, f, int(file_id))
             conn.commit()
@@ -928,7 +930,10 @@ class IntelligenceDB:
                 ),
             )
             conn.commit()
-            return cursor.lastrowid  # type: ignore[return-value]
+            row_id = cursor.lastrowid
+            if row_id is None:
+                raise RuntimeError("SQLite did not return an id after insert")
+            return int(row_id)
 
     def insert_classifications_batch(self, classifications: list[Classification]) -> int:
         """Batch insert classifications. Returns count inserted."""
@@ -1040,7 +1045,7 @@ class IntelligenceDB:
                         score.score_version,
                     ),
                 )
-                score_id = cursor.lastrowid  # type: ignore[assignment]
+                score_id = cursor.lastrowid
             conn.execute(
                 """INSERT OR IGNORE INTO scan_score_observations
                    (scan_id, file_id, overall_score, quality_score, importance_score,
@@ -1177,7 +1182,10 @@ class IntelligenceDB:
                 ),
             )
             conn.commit()
-            return cursor.lastrowid  # type: ignore[return-value]
+            row_id = cursor.lastrowid
+            if row_id is None:
+                raise RuntimeError("SQLite did not return an id after insert")
+            return int(row_id)
 
     def insert_relationships_batch(self, rels: list[Relationship]) -> int:
         """Batch insert relationships."""
@@ -1237,13 +1245,15 @@ class IntelligenceDB:
                 ),
             )
             cluster_id = cursor.lastrowid
+            if cluster_id is None:
+                raise RuntimeError("SQLite did not return a duplicate-cluster id after insert")
             for member in cluster.members:
                 conn.execute(
                     "INSERT INTO duplicate_members (cluster_id, file_id, is_keeper) VALUES (?,?,?)",
                     (cluster_id, member.file_id, member.is_keeper),
                 )
             conn.commit()
-            return cluster_id  # type: ignore[return-value]
+            return int(cluster_id)
 
     def get_duplicate_clusters(
         self,
@@ -1305,7 +1315,10 @@ class IntelligenceDB:
                 ),
             )
             conn.commit()
-            return cursor.lastrowid  # type: ignore[return-value]
+            row_id = cursor.lastrowid
+            if row_id is None:
+                raise RuntimeError("SQLite did not return an id after insert")
+            return int(row_id)
 
     def insert_recommendations_batch(self, recs: list[Recommendation]) -> int:
         """Batch insert recommendations."""

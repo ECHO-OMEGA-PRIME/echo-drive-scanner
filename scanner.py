@@ -411,6 +411,9 @@ class IntelligenceScanOrchestrator:
                         record.mime_type = sample.mime_type
                         record.content_sample = sample.content_sample
                         record.file_signature = sample.file_signature
+                        record.detected_domain = sample.detected_domain
+                        record.domain_confidence = sample.domain_confidence
+                        record.keywords = list(sample.keywords)
                         record.is_binary = 1 if sample.is_binary else 0
                         # Update change detection hash
                         try:
@@ -544,6 +547,9 @@ class IntelligenceScanOrchestrator:
                             mime_type=rec.mime_type or "",
                             file_signature=rec.file_signature or "",
                             content_sample=rec.content_sample,
+                            keywords=list(rec.keywords),
+                            detected_domain=rec.detected_domain,
+                            domain_confidence=rec.domain_confidence,
                             is_binary=bool(rec.is_binary),
                             sha256=rec.sha256 or "",
                             xxhash=rec.xxhash or "",
@@ -575,7 +581,13 @@ class IntelligenceScanOrchestrator:
                         ),
                     )
 
-            if not ENGINE_RUNTIME_URL and SCAN_PROFILES[profile].get("intelligence"):
+            profile_settings = SCAN_PROFILES.get(profile, {})
+            intelligence_enabled = (
+                bool(profile_settings.get("intelligence"))
+                if isinstance(profile_settings, dict)
+                else False
+            )
+            if not ENGINE_RUNTIME_URL and intelligence_enabled:
                 stage_warnings["classification"] += 1
                 self.db.record_stage(
                     scan_id,
@@ -714,9 +726,9 @@ class IntelligenceScanOrchestrator:
             for fid, score in scores.items():
                 domain = score.primary_domain or "UNKNOWN"
                 domain_file_counts[domain] += 1
-                rec = next((r for r in sampled_records if r.id == fid), None)
-                if rec:
-                    domain_size_totals[domain] += rec.size_bytes
+                matched_record = next((item for item in sampled_records if item.id == fid), None)
+                if matched_record is not None:
+                    domain_size_totals[domain] += matched_record.size_bytes
                 domain_score_sums[domain] += score.overall_score
 
             for domain in domain_file_counts:
@@ -854,16 +866,10 @@ class IntelligenceScanOrchestrator:
         # Worker uses file_index (position in files array) to link scores
         file_inputs = []
         file_index_map: dict[int, int] = {}  # local file_id -> batch index
-        for idx, f in enumerate(files):
-            fid = f.id if hasattr(f, "id") else (f.get("id") if isinstance(f, dict) else idx)
+        for idx, file_record in enumerate(files):
+            fid = file_record.id if file_record.id is not None else idx
             file_index_map[fid] = idx
-            rec = (
-                f
-                if isinstance(f, dict)
-                else f.model_dump()
-                if hasattr(f, "model_dump")
-                else vars(f)
-            )
+            rec = file_record.model_dump()
             file_inputs.append(
                 {
                     "path": rec.get("path", ""),
@@ -904,12 +910,8 @@ class IntelligenceScanOrchestrator:
 
         # ── Map domain_stats → DomainInput ────────────────────────────────
         domain_inputs = []
-        for d in domain_stats:
-            dd = (
-                d
-                if isinstance(d, dict)
-                else (d.model_dump() if hasattr(d, "model_dump") else vars(d))
-            )
+        for domain_stat in domain_stats:
+            dd = domain_stat.model_dump()
             domain_inputs.append(
                 {
                     "domain": dd.get("domain", "UNKNOWN"),
@@ -939,12 +941,8 @@ class IntelligenceScanOrchestrator:
 
         # ── Map recommendations → RecommendationInput ─────────────────────
         rec_inputs = []
-        for r in recs:
-            rd = (
-                r
-                if isinstance(r, dict)
-                else (r.model_dump() if hasattr(r, "model_dump") else vars(r))
-            )
+        for recommendation in recs:
+            rd = recommendation.model_dump()
             rec_inputs.append(
                 {
                     "title": rd.get("title", ""),
@@ -957,11 +955,7 @@ class IntelligenceScanOrchestrator:
             )
 
         # ── Build ScanInput payload ────────────────────────────────────────
-        sd = (
-            scan
-            if isinstance(scan, dict)
-            else (scan.model_dump() if hasattr(scan, "model_dump") else vars(scan))
-        )
+        sd = scan.model_dump()
         BATCH = WORKER_PUSH_BATCH_SIZE  # default 500
 
         # Send first batch with full scan metadata + first BATCH files

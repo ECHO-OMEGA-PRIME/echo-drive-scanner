@@ -127,6 +127,9 @@ class FileRecord(BaseModel):
     is_binary: int = 0
     content_sample: str | None = None
     file_signature: str | None = None
+    detected_domain: str = "UNKNOWN"
+    domain_confidence: float = 0.0
+    keywords: list[str] = Field(default_factory=list)
     scan_id: int = 0
     first_seen_scan_id: int | None = None
     last_modified_scan_id: int | None = None

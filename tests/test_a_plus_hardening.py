@@ -401,7 +401,10 @@ def test_sdk_contract_manifest_validates_live_read_responses(tmp_path):
     db: IntelligenceDB = app.state.db
     scan_id, _ = seed_scan(db, str(tmp_path / "contract.txt"))
     cases = {
+        "echo.drivescan.health": "/health",
         "echo.drivescan.status": "/api/scan/status",
+        "echo.drivescan.scan_status": f"/api/scans/{scan_id}/status",
+        "echo.drivescan.stages": f"/api/scans/{scan_id}/stages",
         "echo.drivescan.results": f"/api/scan/{scan_id}/results",
         "echo.drivescan.files": f"/api/files?scan_id={scan_id}",
         "echo.drivescan.domains": f"/api/domains?scan_id={scan_id}",
@@ -436,3 +439,29 @@ def test_sdk_input_contracts_reject_unknown_fields():
     )
     assert errors
     assert errors[0].validator == "additionalProperties"
+
+
+def test_cancel_sdk_contract_is_strict_and_response_validates():
+    from jsonschema import Draft202012Validator
+
+    root = Path(__file__).resolve().parents[1]
+    manifest = json.loads(
+        (root / "contracts" / "sdk_capability_schemas.json").read_text(encoding="utf-8")
+    )
+    contract = manifest["capabilities"]["echo.drivescan.cancel"]
+    input_validator = Draft202012Validator(contract["input_schema"])
+    valid_input = {
+        "scan_id": 7,
+        "reason": "Operator cancelled this owned scan after detecting stale scope.",
+    }
+    assert list(input_validator.iter_errors(valid_input)) == []
+    assert list(input_validator.iter_errors({**valid_input, "capability": "arbitrary"}))
+    assert list(input_validator.iter_errors({"scan_id": 7, "reason": "too short"}))
+
+    output_validator = Draft202012Validator(contract["output_schema"])
+    valid_output = {
+        "api_version": "2.1",
+        "status": "cancellation_requested",
+        "scan_id": 7,
+    }
+    assert list(output_validator.iter_errors(valid_output)) == []

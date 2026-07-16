@@ -143,7 +143,7 @@ def run_checks(sample_dir: Path) -> None:
     )
     check(
         "/health exposes versioned v2.1 contract",
-        bool(payload) and payload.get("api_version") == "2.1" and payload.get("version") == "2.1.0",
+        bool(payload) and payload.get("api_version") == "2.1" and payload.get("version") == "2.2.0",
         f"api_version={payload.get('api_version') if payload else None}",
     )
     check(

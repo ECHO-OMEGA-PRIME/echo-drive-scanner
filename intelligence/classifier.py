@@ -9,6 +9,7 @@ Routes each file through the optimal engine(s) based on a 3-tier strategy:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -30,6 +31,7 @@ from storage.models import (
     Classification,
     ClassificationResult,
     ClassificationTier,
+    ConfidenceLevel,
     EngineResult,
     FileRecord,
     FileSample,
@@ -252,28 +254,82 @@ class ClassificationPipeline:
         query = _build_query_from_sample(sample)
         start = time.monotonic()
 
-        try:
-            if tier == ClassificationTier.TIER1_FAST:
-                result = await self._tier1_classify(sample, query, file_id, scan_id)
-            elif tier == ClassificationTier.TIER2_EXPLORE:
-                result = await self._tier2_classify(sample, query, file_id, scan_id)
-            else:
-                result = await self._tier3_classify(sample, query, file_id, scan_id)
-        except Exception as exc:
-            logger.warning("Classification failed for {}: {}", sample.path, exc)
-            self.stats["total_errors"] += 1
-            result = ClassificationResult(
-                file_path=sample.path,
-                tier=tier,
-                classifications=[],
-                primary_domain=sample.detected_domain,
-            )
+        if not self.client.enabled:
+            result = self._local_classify(sample, file_id, scan_id, tier)
+        else:
+            try:
+                if tier == ClassificationTier.TIER1_FAST:
+                    result = await self._tier1_classify(sample, query, file_id, scan_id)
+                elif tier == ClassificationTier.TIER2_EXPLORE:
+                    result = await self._tier2_classify(sample, query, file_id, scan_id)
+                else:
+                    result = await self._tier3_classify(sample, query, file_id, scan_id)
+            except Exception as exc:
+                logger.warning("Classification failed for {}: {}", sample.path, exc)
+                self.stats["total_errors"] += 1
+                result = self._local_classify(sample, file_id, scan_id, tier)
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
         result.total_ms = elapsed_ms
         self.stats["total_ms"] += elapsed_ms
         self.stats["total_classified"] += 1
         return result
+
+    def _local_classify(
+        self,
+        sample: FileSample,
+        file_id: int,
+        scan_id: int,
+        tier: ClassificationTier,
+    ) -> ClassificationResult:
+        """Create a deterministic classification from sampler evidence only."""
+        domain = sample.detected_domain or "UNKNOWN"
+        confidence_score = max(0.0, min(1.0, sample.domain_confidence))
+        confidence = (
+            ConfidenceLevel.DEFENSIBLE.value
+            if confidence_score >= 0.8
+            else ConfidenceLevel.AGGRESSIVE.value
+            if confidence_score >= 0.5
+            else ConfidenceLevel.UNKNOWN.value
+        )
+        evidence = "|".join(
+            [
+                sample.path,
+                sample.extension,
+                sample.mime_type,
+                domain,
+                f"{confidence_score:.6f}",
+                ",".join(sorted(sample.keywords[:20])),
+            ]
+        )
+        classification = Classification(
+            file_id=file_id,
+            scan_id=scan_id,
+            engine_id="LOCAL_RULES_V1",
+            domain=domain,
+            domain_label=domain,
+            topic=sample.extension or sample.mime_type,
+            conclusion=(
+                "Deterministic local classification from extension, MIME, path, "
+                "signature, and keyword evidence."
+            ),
+            confidence=confidence,
+            authority_weight=25,
+            score=confidence_score,
+            mode=QueryMode.FAST.value,
+            response_ms=0,
+            determinism_hash=hashlib.sha256(evidence.encode("utf-8")).hexdigest(),
+            classified_at=_now_iso(),
+        )
+        self.stats["total_api_calls"] += 0
+        return ClassificationResult(
+            file_path=sample.path,
+            tier=tier,
+            classifications=[classification],
+            primary_domain=domain,
+            primary_engine=classification.engine_id,
+            domain_distribution={domain: confidence_score},
+        )
 
     async def _tier1_classify(
         self,
@@ -348,7 +404,7 @@ class ClassificationPipeline:
         if tasks:
             domain_results = await asyncio.gather(*tasks, return_exceptions=True)
             for dr in domain_results:
-                if isinstance(dr, Exception):
+                if isinstance(dr, BaseException):
                     logger.warning("Tier 2 domain query failed: {}", dr)
                     continue
                 for er in dr.results[:2]:
@@ -407,7 +463,7 @@ class ClassificationPipeline:
         if tasks:
             memo_results = await asyncio.gather(*tasks, return_exceptions=True)
             for dr in memo_results:
-                if isinstance(dr, Exception):
+                if isinstance(dr, BaseException):
                     logger.warning("Tier 3 MEMO query failed: {}", dr)
                     continue
                 for er in dr.results[:3]:
@@ -490,7 +546,7 @@ class ClassificationPipeline:
             chunk = all_tasks[chunk_start : chunk_start + BATCH_SIZE * CONCURRENT_BATCHES]
             chunk_results = await asyncio.gather(*chunk, return_exceptions=True)
             for cr in chunk_results:
-                if isinstance(cr, Exception):
+                if isinstance(cr, BaseException):
                     logger.error("Classification task failed: {}", cr)
                     self.stats["total_errors"] += 1
                 else:

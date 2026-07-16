@@ -93,6 +93,11 @@ class EngineClient:
 
         logger.info(f"EngineClient initialized | base_url={self.base_url}")
 
+    @property
+    def enabled(self) -> bool:
+        """Return whether an external Echo Engine Runtime is configured."""
+        return self._enabled
+
     async def __aenter__(self) -> EngineClient:
         """Context manager entry - create aiohttp session."""
         connector = aiohttp.TCPConnector(
@@ -582,111 +587,83 @@ class EngineClient:
         samples: list[FileSample],
         concurrency: int = 20,
     ) -> list[ClassificationResult]:
-        """
-        Classify multiple file samples in parallel batches.
-
-        Args:
-            samples: List of FileSample objects to classify
-            concurrency: Max concurrent queries
-
-        Returns:
-            List of ClassificationResult in same order as input
-        """
-        semaphore = asyncio.Semaphore(concurrency)
+        """Classify samples concurrently using the current v2 model contract."""
+        semaphore = asyncio.Semaphore(max(1, concurrency))
         results: list[ClassificationResult | None] = [None] * len(samples)
 
-        async def classify_one(idx: int, sample: FileSample) -> None:
-            """Classify a single sample and store result."""
+        def to_classification(engine: EngineResult) -> Classification:
+            return Classification(
+                engine_id=engine.engine_id,
+                domain=engine.domain,
+                domain_label=engine.domain_label or None,
+                topic=engine.topic,
+                conclusion=engine.conclusion,
+                confidence=engine.confidence,
+                authority_weight=engine.authority_weight,
+                score=engine.score,
+                mode=engine.mode,
+                response_ms=engine.response_ms,
+                determinism_hash=engine.determinism_hash or None,
+            )
+
+        async def classify_one(index: int, sample: FileSample) -> None:
             async with semaphore:
+                started = time.perf_counter()
+                query = f"File analysis: {' '.join(sample.keywords[:10])}"
+                tier = ClassificationTier.TIER3_DEEP
+                engines: list[EngineResult] = []
                 try:
-                    # Build query from keywords
-                    query = f"File analysis: {' '.join(sample.keywords[:10])}"
-
-                    # Choose query method based on detected domain
                     if sample.detected_domain != "UNKNOWN" and sample.domain_confidence >= 0.5:
-                        # Query specific domain
                         domain_result = await self.query_domain(
-                            sample.detected_domain,
-                            query,
-                            mode="FAST",
+                            sample.detected_domain, query, mode="FAST"
                         )
-
-                        # Pick best engine from domain
-                        if domain_result.engines:
-                            best = max(domain_result.engines, key=lambda e: e.confidence)
-                            classification = Classification(
-                                tier=ClassificationTier.TIER_1,
-                                domain=sample.detected_domain,
-                                subdomain=best.engine_id,
-                                confidence=best.confidence,
-                                rationale=best.response[:200],
-                            )
-                        else:
-                            classification = Classification(
-                                tier=ClassificationTier.TIER_3,
-                                domain="UNKNOWN",
-                                subdomain="",
-                                confidence=0.0,
-                                rationale="No engines responded",
-                            )
+                        engines = domain_result.results
+                        tier = (
+                            ClassificationTier.TIER1_FAST
+                            if sample.domain_confidence >= 0.8
+                            else ClassificationTier.TIER2_EXPLORE
+                        )
                     else:
-                        # Cross-domain search
                         cross_result = await self.cross_domain_query(query, limit=3)
-
-                        if cross_result.matches:
-                            best = cross_result.matches[0]
-                            # Determine tier based on confidence
-                            if best.confidence >= 0.8:
-                                tier = ClassificationTier.TIER_1
-                            elif best.confidence >= 0.6:
-                                tier = ClassificationTier.TIER_2
-                            else:
-                                tier = ClassificationTier.TIER_3
-
-                            classification = Classification(
-                                tier=tier,
-                                domain=sample.detected_domain,
-                                subdomain=best.engine_id,
-                                confidence=best.confidence,
-                                rationale=best.response[:200],
-                            )
-                        else:
-                            classification = Classification(
-                                tier=ClassificationTier.TIER_3,
-                                domain="UNKNOWN",
-                                subdomain="",
-                                confidence=0.0,
-                                rationale="No matches found",
+                        engines = cross_result.results
+                        if engines:
+                            best_score = max(engine.score for engine in engines)
+                            tier = (
+                                ClassificationTier.TIER1_FAST
+                                if best_score >= 0.8
+                                else ClassificationTier.TIER2_EXPLORE
+                                if best_score >= 0.6
+                                else ClassificationTier.TIER3_DEEP
                             )
 
-                    results[idx] = ClassificationResult(
-                        file_path=sample.file_path,
-                        classification=classification,
-                        query_used=query,
-                        latency_ms=0.0,  # Aggregate across queries
+                    classifications = [to_classification(engine) for engine in engines]
+                    best = max(classifications, key=lambda item: item.score, default=None)
+                    distribution: dict[str, float] = {}
+                    for item in classifications:
+                        distribution[item.domain] = distribution.get(item.domain, 0.0) + item.score
+                    results[index] = ClassificationResult(
+                        file_path=sample.path,
+                        tier=tier,
+                        classifications=classifications,
+                        primary_domain=best.domain if best else "UNKNOWN",
+                        primary_engine=best.engine_id if best else "",
+                        domain_distribution=distribution,
+                        total_ms=int((time.perf_counter() - started) * 1000),
+                    )
+                except Exception as exc:
+                    logger.error("Classification failed for {}: {}", sample.path, exc)
+                    results[index] = ClassificationResult(
+                        file_path=sample.path,
+                        tier=ClassificationTier.TIER3_DEEP,
+                        classifications=[],
+                        primary_domain="ERROR",
+                        primary_engine="",
+                        domain_distribution={},
+                        total_ms=int((time.perf_counter() - started) * 1000),
                     )
 
-                except Exception as e:
-                    logger.error(f"Classification failed for {sample.file_path}: {e}")
-                    results[idx] = ClassificationResult(
-                        file_path=sample.file_path,
-                        classification=Classification(
-                            tier=ClassificationTier.TIER_3,
-                            domain="ERROR",
-                            subdomain="",
-                            confidence=0.0,
-                            rationale=f"Error: {str(e)[:200]}",
-                        ),
-                        query_used=query if "query" in locals() else "",
-                        latency_ms=0.0,
-                    )
-
-        # Launch all classifications
-        tasks = [classify_one(i, sample) for i, sample in enumerate(samples)]
-        await asyncio.gather(*tasks)
-
-        # Filter out any None results (shouldn't happen)
-        return [r for r in results if r is not None]
+        await asyncio.gather(*(classify_one(index, sample) for index, sample in enumerate(samples)))
+        return [result for result in results if result is not None]
 
     async def health_check(self) -> bool:
         """

@@ -50,7 +50,7 @@ except ImportError:
 
 # Optional dependencies for rich content extraction
 try:
-    import fitz  # PyMuPDF
+    import fitz  # type: ignore[import-untyped]  # PyMuPDF
 
     HAS_FITZ = True
 except ImportError:
@@ -64,7 +64,7 @@ except ImportError:
     HAS_DOCX = False
 
 try:
-    from openpyxl import load_workbook
+    from openpyxl import load_workbook  # type: ignore[import-untyped]
 
     HAS_OPENPYXL = True
 except ImportError:
@@ -164,9 +164,9 @@ class ContentSampler:
 
     async def sample_files_parallel(
         self,
-        paths: list,
+        paths: list[Path],
         max_workers: int = 32,
-    ) -> list:
+    ) -> list[FileSample | None]:
         """Sample multiple files in parallel using ThreadPoolExecutor.
         10-20x faster than sequential sampling for large batches."""
         loop = asyncio.get_event_loop()
@@ -174,9 +174,9 @@ class ContentSampler:
             tasks = [loop.run_in_executor(executor, self.sample_file, p) for p in paths]
             results = await asyncio.gather(*tasks, return_exceptions=True)
         # Filter exceptions
-        out = []
+        out: list[FileSample | None] = []
         for _p, r in zip(paths, results, strict=False):
-            if isinstance(r, Exception):
+            if isinstance(r, BaseException):
                 out.append(None)
             else:
                 out.append(r)
@@ -398,7 +398,7 @@ class ContentSampler:
             return None, []
 
         try:
-            doc = Document(path)
+            doc = Document(str(path))
             paragraphs = []
             for para in doc.paragraphs[:20]:
                 if para.text.strip():
@@ -529,7 +529,7 @@ class ContentSampler:
         if depth > 3:  # Limit recursion depth
             return []
 
-        keys = []
+        keys: list[str] = []
         if isinstance(data, dict):
             keys.extend(data.keys())
             for value in data.values():
@@ -598,6 +598,7 @@ class ContentSampler:
         """
         try:
             sha256 = hashlib.sha256()
+            fast: Any
             if HAS_XXHASH:
                 fast = xxhash.xxh64()
             else:
@@ -660,7 +661,7 @@ class ContentSampler:
 
         async def sample_with_semaphore(path: Path) -> FileSample:
             async with semaphore:
-                return await self.sample_file(path)
+                return await asyncio.to_thread(self.sample_file, path)
 
         tasks = [sample_with_semaphore(path) for path in paths]
         return await asyncio.gather(*tasks)

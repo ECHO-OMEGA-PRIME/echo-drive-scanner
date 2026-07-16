@@ -12,14 +12,14 @@
         "intelligence",
         "storage"
       ],
-      "completed_at": "2026-07-16T07:13:01.541744+00:00",
-      "duration_seconds": 0.109,
+      "completed_at": "2026-07-16T08:25:03.291110+00:00",
+      "duration_seconds": 0.093,
       "log": "artifacts\\quality\\compile.log",
       "log_sha256": "fac6e4ca7287a0c0f8476133c1f67adf208037a7ac2cd303bc65fb3661b44669",
       "name": "compile",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:01.432383+00:00"
+      "started_at": "2026-07-16T08:25:03.197939+00:00"
     },
     {
       "command": [
@@ -28,14 +28,14 @@
         "pip",
         "check"
       ],
-      "completed_at": "2026-07-16T07:13:02.085026+00:00",
-      "duration_seconds": 0.542,
+      "completed_at": "2026-07-16T08:25:04.019971+00:00",
+      "duration_seconds": 0.727,
       "log": "artifacts\\quality\\dependency_integrity.log",
       "log_sha256": "856c61fb5b09b04b0319a05af05b72587b97f45b560022c2f9bae4bcc11c099a",
       "name": "dependency_integrity",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:01.542763+00:00"
+      "started_at": "2026-07-16T08:25:03.292982+00:00"
     },
     {
       "command": [
@@ -47,34 +47,32 @@
         "--exclude",
         ".venv"
       ],
-      "completed_at": "2026-07-16T07:13:02.190918+00:00",
-      "duration_seconds": 0.105,
+      "completed_at": "2026-07-16T08:25:04.136014+00:00",
+      "duration_seconds": 0.114,
       "log": "artifacts\\quality\\lint.log",
       "log_sha256": "2b4ee0a37d3f3677704a969b0a62bdf804338b3b83b0cf63794b7def9b5fd990",
       "name": "lint",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:02.085901+00:00"
+      "started_at": "2026-07-16T08:25:04.022015+00:00"
     },
     {
       "command": [
         "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
         "-m",
         "mypy",
-        "--follow-imports=skip",
-        "dashboard/api_models.py",
-        "dashboard/security.py",
-        "dashboard/server.py",
-        "intelligence/function_library.py"
+        ".",
+        "--exclude",
+        ".venv|artifacts|tests"
       ],
-      "completed_at": "2026-07-16T07:13:02.423894+00:00",
-      "duration_seconds": 0.232,
-      "log": "artifacts\\quality\\critical_types.log",
-      "log_sha256": "7822002f3b8ebc35d52b0863734bd634e666c24aa23fd5b494db1f929a8e59f6",
-      "name": "critical_types",
+      "completed_at": "2026-07-16T08:25:04.875065+00:00",
+      "duration_seconds": 0.737,
+      "log": "artifacts\\quality\\full_types.log",
+      "log_sha256": "732fb335cc653d50aac00bfc687869b4657e3d70f95605cc60b9ca7a0ebf303a",
+      "name": "full_types",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:02.191971+00:00"
+      "started_at": "2026-07-16T08:25:04.137594+00:00"
     },
     {
       "command": [
@@ -83,14 +81,14 @@
         "pytest",
         "-q"
       ],
-      "completed_at": "2026-07-16T07:13:05.405861+00:00",
-      "duration_seconds": 2.981,
+      "completed_at": "2026-07-16T08:25:08.856818+00:00",
+      "duration_seconds": 3.981,
       "log": "artifacts\\quality\\tests.log",
-      "log_sha256": "1a03f7d4362ce40f42cd18b44302d5cf90afcfbad35d62230ebfb95653e03097",
+      "log_sha256": "cdd55a31f66b3fd155e32b493ea63461a543d36d7472a43f7973790a2cd6087f",
       "name": "tests",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:02.424821+00:00"
+      "started_at": "2026-07-16T08:25:04.876185+00:00"
     },
     {
       "command": [
@@ -106,28 +104,77 @@
         "--cov-report=json:artifacts/critical-coverage.json",
         "-q"
       ],
-      "completed_at": "2026-07-16T07:13:09.775053+00:00",
-      "duration_seconds": 4.368,
+      "completed_at": "2026-07-16T08:25:13.417099+00:00",
+      "duration_seconds": 4.559,
       "log": "artifacts\\quality\\critical_coverage.log",
-      "log_sha256": "19d3824b04c157b178970a23006210a7729ed1e40dcde9bf3b59046ec6d47dd9",
+      "log_sha256": "f69bbf68d1c337c172cc801dc190988340388df757ec95166fd9b5c2c15c6292",
       "name": "critical_coverage",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:05.406945+00:00"
+      "started_at": "2026-07-16T08:25:08.858538+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "-q",
+        "--cov=scanner",
+        "--cov=storage.db",
+        "--cov=dashboard.server",
+        "--cov=dashboard.security",
+        "--cov=dashboard.api_models",
+        "--cov=config",
+        "--cov=intelligence.classifier",
+        "--cov=intelligence.content_sampler",
+        "--cov=intelligence.engine_client",
+        "--cov=intelligence.function_library",
+        "--cov=intelligence.deduplicator",
+        "--cov=intelligence.recommender",
+        "--cov=intelligence.relationship_mapper",
+        "--cov=intelligence.scorer",
+        "--cov=intelligence.project_advisor",
+        "--cov-report=term-missing",
+        "--cov-report=json:artifacts/production-core-coverage.json",
+        "--cov-fail-under=55"
+      ],
+      "completed_at": "2026-07-16T08:25:20.937409+00:00",
+      "duration_seconds": 7.519,
+      "log": "artifacts\\quality\\production_core_coverage.log",
+      "log_sha256": "ab0acbf3861ce1164bc2170a95ec722e856e9ea662765ddc27ff9576c1f45347",
+      "name": "production_core_coverage",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T08:25:13.418300+00:00"
+    },
+    {
+      "command": [
+        "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
+        "tools/sdk_registry_deployment.py",
+        "--check"
+      ],
+      "completed_at": "2026-07-16T08:25:21.017597+00:00",
+      "duration_seconds": 0.078,
+      "log": "artifacts\\quality\\sdk_registry_contract.log",
+      "log_sha256": "0621aae730556ed05adf061dc022ad5b2708d6de463034ffcabf623389cd4933",
+      "name": "sdk_registry_contract",
+      "passed": true,
+      "return_code": 0,
+      "started_at": "2026-07-16T08:25:20.939585+00:00"
     },
     {
       "command": [
         "C:\\Users\\bobmc\\echo-drive-scanner\\.venv\\Scripts\\python.exe",
         "smoke_live.py"
       ],
-      "completed_at": "2026-07-16T07:13:12.345962+00:00",
-      "duration_seconds": 2.57,
+      "completed_at": "2026-07-16T08:25:23.668896+00:00",
+      "duration_seconds": 2.65,
       "log": "artifacts\\quality\\live_smoke.log",
-      "log_sha256": "6c4291831ed813397d86759aec95350bbd84b8f437cd5d04ae4b985db2bebc16",
+      "log_sha256": "6a15f4e09666ce4d91e3953615bfbd797d09be7bd699c7cdb375464cc04ab0fb",
       "name": "live_smoke",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:09.775975+00:00"
+      "started_at": "2026-07-16T08:25:21.018728+00:00"
     },
     {
       "command": [
@@ -139,18 +186,18 @@
         "--progress-spinner",
         "off"
       ],
-      "completed_at": "2026-07-16T07:13:24.489198+00:00",
-      "duration_seconds": 12.142,
+      "completed_at": "2026-07-16T08:25:37.006626+00:00",
+      "duration_seconds": 13.336,
       "log": "artifacts\\quality\\dependency_audit.log",
       "log_sha256": "389546aabff3ec9204003a6edf3f9e31025696a7d1e4f298876c03a1bca4701e",
       "name": "dependency_audit",
       "passed": true,
       "return_code": 0,
-      "started_at": "2026-07-16T07:13:12.347590+00:00"
+      "started_at": "2026-07-16T08:25:23.670522+00:00"
     }
   ],
-  "generated_at": "2026-07-16T07:13:24.490244+00:00",
-  "report_version": "1.0",
+  "generated_at": "2026-07-16T08:25:37.008103+00:00",
+  "report_version": "2.0",
   "repository": "C:\\Users\\bobmc\\echo-drive-scanner",
   "verdict": "PASS"
 }

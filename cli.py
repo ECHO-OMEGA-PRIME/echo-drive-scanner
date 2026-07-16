@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from typing import Any
 
 from loguru import logger
 
@@ -179,7 +180,10 @@ async def cmd_scan(args: argparse.Namespace) -> int:
         return 1
 
     profile = "INTELLIGENCE" if args.intelligence else args.profile
-    profile_config = SCAN_PROFILES.get(profile, {})
+    raw_profile_config = SCAN_PROFILES.get(profile, {})
+    profile_config: dict[str, Any] = (
+        raw_profile_config if isinstance(raw_profile_config, dict) else {}
+    )
 
     config = ScanConfig(
         max_depth=args.max_depth or profile_config.get("max_depth"),

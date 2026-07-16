@@ -1,0 +1,138 @@
+{
+  "classification_engines": {
+    "LOCAL_RULES_V1": 155
+  },
+  "completed_at": "2026-07-16T08:24:19.009613+00:00",
+  "generated_at": "2026-07-16T08:24:19.009613+00:00",
+  "privacy": {
+    "content_samples_in_report": false,
+    "database_committed": false,
+    "full_paths_in_report": false
+  },
+  "profile": "INTEL_FAST",
+  "reasons": [],
+  "report_version": "1.0",
+  "roots": [
+    {
+      "branch": "main",
+      "dirty_entries": 27,
+      "exists": true,
+      "git": true,
+      "head": "73affb39f33b711b01f62f020178fdf96b69f11b",
+      "name": "echo-drive-scanner",
+      "source_bytes": 648925,
+      "source_file_count": 42,
+      "source_tree_sha256": "1696abd5e764a4a2d8becb0f9768b45196c22abfe86ffb22565d956cc088e8f3"
+    },
+    {
+      "branch": "main",
+      "dirty_entries": 11,
+      "exists": true,
+      "git": true,
+      "head": "87c8afcfa5e439219b8737f7fdcb202967810316",
+      "name": "echo-certification-forge",
+      "source_bytes": 459468,
+      "source_file_count": 39,
+      "source_tree_sha256": "f05ce81490c51c8efeabd2168ebb2228f30c53e9ae30874ec7ecb66eceb9fecc"
+    }
+  ],
+  "scan": {
+    "duplicate_cluster_count": 12,
+    "duration_seconds": 3.879958391189575,
+    "files_classified": 155,
+    "files_skipped": 8,
+    "proposal_count": 17,
+    "recommendation_count": 3,
+    "status": "completed_with_warnings",
+    "total_files": 163,
+    "total_size_bytes": 5155926,
+    "wasted_bytes": 394144
+  },
+  "scan_id": 1,
+  "stages": [
+    {
+      "completed_at": "2026-07-16T08:24:15.136192+00:00",
+      "detail": "131.2GB free",
+      "scan_id": 1,
+      "stage": "preflight",
+      "started_at": "2026-07-16T08:24:15.129865+00:00",
+      "status": "passed",
+      "warning_count": 0
+    },
+    {
+      "completed_at": "2026-07-16T08:24:16.792837+00:00",
+      "detail": "163 files",
+      "scan_id": 1,
+      "stage": "discovery",
+      "started_at": "2026-07-16T08:24:15.141435+00:00",
+      "status": "passed",
+      "warning_count": 0
+    },
+    {
+      "completed_at": "2026-07-16T08:24:16.797496+00:00",
+      "detail": "complete",
+      "scan_id": 1,
+      "stage": "library_extraction",
+      "started_at": "2026-07-16T08:24:16.797496+00:00",
+      "status": "passed",
+      "warning_count": 0
+    },
+    {
+      "completed_at": "2026-07-16T08:24:17.481205+00:00",
+      "detail": "engine runtime is not configured; deterministic local scoring continued",
+      "scan_id": 1,
+      "stage": "classification",
+      "started_at": "2026-07-16T08:24:16.805993+00:00",
+      "status": "degraded",
+      "warning_count": 1
+    },
+    {
+      "completed_at": "2026-07-16T08:24:18.513234+00:00",
+      "detail": "12 clusters",
+      "scan_id": 1,
+      "stage": "deduplication",
+      "started_at": "2026-07-16T08:24:18.513234+00:00",
+      "status": "passed",
+      "warning_count": 0
+    },
+    {
+      "completed_at": "2026-07-16T08:24:18.523653+00:00",
+      "detail": "3 recommendations",
+      "scan_id": 1,
+      "stage": "recommendations",
+      "started_at": "2026-07-16T08:24:18.523653+00:00",
+      "status": "passed",
+      "warning_count": 0
+    },
+    {
+      "completed_at": "2026-07-16T08:24:18.956202+00:00",
+      "detail": "proposal analysis complete",
+      "scan_id": 1,
+      "stage": "project_advisor",
+      "started_at": "2026-07-16T08:24:18.956202+00:00",
+      "status": "passed",
+      "warning_count": 0
+    },
+    {
+      "completed_at": "2026-07-16T08:24:18.999253+00:00",
+      "detail": "terminal_status=completed_with_warnings",
+      "scan_id": 1,
+      "stage": "finalization",
+      "started_at": "2026-07-16T08:24:18.999253+00:00",
+      "status": "degraded",
+      "warning_count": 1
+    },
+    {
+      "completed_at": "2026-07-16T08:24:19.003393+00:00",
+      "detail": "disabled",
+      "scan_id": 1,
+      "stage": "worker_sync",
+      "started_at": "2026-07-16T08:24:19.003393+00:00",
+      "status": "skipped",
+      "warning_count": 0
+    }
+  ],
+  "started_at": "2026-07-16T08:24:15.115938+00:00",
+  "verdict": "PASS",
+  "wall_seconds": 3.894
+}

@@ -203,7 +203,7 @@ def create_app(
 
     app = FastAPI(
         title="Intelligent Drive Scanner",
-        version="2.1.0",
+        version="2.2.0",
         description="Governed filesystem intelligence and build proposals",
     )
     app.state.db = db
@@ -693,7 +693,7 @@ def create_app(
             return _json(
                 {
                     "status": "degraded",
-                    "version": "2.1.0",
+                    "version": "2.2.0",
                     "subsystems": {"database": "failed", "api": "healthy"},
                     "error": "database_unavailable",
                 }
@@ -704,7 +704,7 @@ def create_app(
         return _json(
             {
                 "status": status,
-                "version": "2.1.0",
+                "version": "2.2.0",
                 "database": db.db_path.name,
                 "total_scans": total_scans,
                 "latest_scan": latest.model_dump() if latest else None,

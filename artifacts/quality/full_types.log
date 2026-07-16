@@ -1,0 +1,7 @@
+COMMAND: C:\Users\bobmc\echo-drive-scanner\.venv\Scripts\python.exe -m mypy . --exclude .venv|artifacts|tests
+RETURN_CODE: 0
+
+STDOUT:
+Success: no issues found in 30 source files
+
+STDERR:
